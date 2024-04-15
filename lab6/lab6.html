@@ -1,0 +1,294 @@
+<html>
+
+<head>
+  <title>Hello WebGL!</title>
+
+  <script type="x-shader/x-vertex" id="vshader">
+    attribute vec3 a_coords;
+    attribute vec3 a_color;
+    attribute vec2 a_texCoord; // Texture coordinate
+    
+    varying vec3 v_color;
+    varying vec2 v_texCoord; // Texture coordinate
+    
+    uniform mat4 u_projection;
+    uniform mat4 u_view;
+    
+    void main() {
+        gl_Position = u_projection * u_view * vec4(a_coords, 1.0);  
+        v_color = a_color;
+        v_texCoord = a_texCoord; // Pass texture coordinate to fragment shader
+    }
+</script>
+
+
+    <script type="x-shader/x-fragment" id="fshader">
+      precision mediump float;
+      varying vec3 v_color;
+      varying vec2 v_texCoord; // Texture coordinate
+      uniform sampler2D u_texture; // Texture sampler
+      
+      void main() {
+          vec4 texColor = texture2D(u_texture, v_texCoord);
+          gl_FragColor = mix(vec4(v_color, 1.0), texColor, 0.5); // Mix texture color and vertex color
+      }
+  </script>
+  
+
+  <script src="../webgl/webgl-utils.js"></script>
+  <script src="../webgl/gl-matrix.js"></script>
+  <script src="../webgl/trackball-rotator.js"></script>
+  <script src="../webgl/basic-object-models-IFS.js"></script>
+  <script src="../webgl/gl-matrix-min.js"></script>
+  <script src ="feathers.jpg"></script>
+
+  <script>
+    var canvas, gl;
+var attributeCoords, bufferCoords;
+var attributeColor, bufferColor;
+var u_projection, u_view; 
+var rotator;
+let pedestalModel = cube(1);
+var xOffset = 0.2;
+var yOffset = 0.1;
+var zOffset = 0.3;
+var numTimes = 0;
+let texture;
+
+var triangle1 = {
+  coords: [
+      -0.5, -0.5, 0,  // Base vertex 1
+      0.5, -0.5, 0,   // Base vertex 2
+      0, 0.5, 0       // Apex vertex
+  ],
+  colors: [
+      1, 0, 0, 
+      0, 1, 0,
+      0, 0, 1  
+  ]
+};
+
+var triangle2 = {
+  coords: [
+      -0.5, -0.5, 0,  // Base vertex 1
+      0.5, -0.5, 0,   // Base vertex 2
+      0, 0.5, 0       // Apex vertex
+  ],
+  colors: [
+      1, 1, 0,
+      0, 1, 1, 
+      1, 0, 1
+  ]
+};
+
+var triangle3 = {
+  coords: [
+      -0.5, -0.5, 0,  // Base vertex 1
+      0, 0, -0.5,     // Rear base vertex
+      0, 0.5, 0       // Apex vertex
+  ],
+  colors: [
+      1, 1, 0,
+      0, 1, 1, 
+      1, 0, 1
+  ]
+};
+var triangle4 = {
+  coords: [
+      0.5, -0.5, 0,   // Base vertex 2
+      0, 0, -0.5,     // Rear base vertex
+      0, 0.5, 0       // Apex vertex
+  ],
+  colors: [
+      1, 1, 0,
+      0, 1, 1, 
+      1, 0, 1
+  ]
+};
+
+function draw() {
+  gl.clearColor(0, 0, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  
+  // Projection matrix
+  var projectionMatrix = mat4.create();
+  mat4.perspective(projectionMatrix, Math.PI / 4, canvas.width / canvas.height, 0.1, 10.0);
+  gl.uniformMatrix4fv(u_projection, false, projectionMatrix);
+
+  let mv = rotator.getViewMatrix();
+  mat4.lookAt(mv, [0, 1, 5], [0, 0, 0], [0, 1, 0]);  
+  gl.uniformMatrix4fv(u_view, false, mv);
+
+  drawPedestalAt([-1, 0.6, 0]);  // Draw pedestal with a pyramid on top at the left
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  console.log("Texture activated: " + gl.activeTexture(gl.TEXTURE0) )
+  drawPedestalAt([0, 0, 0]);    // Draw pedestal with a pyramid on top at the center
+  drawPedestalAt([1, -0.6, 0]);  // Draw pedestal with a pyramid on top at the right
+}
+
+function drawPyramidAt(translation) {
+  console.log("Pyramid translation:", translation);
+  drawTriangle(triangle1, translation);
+  drawTriangle(triangle2, translation);
+  drawTriangle(triangle3, translation);
+  drawTriangle(triangle4, translation);
+}
+
+
+function drawTriangle(triangle, translation) {
+  let translatedCoords = [];
+  for (let i = 0; i < triangle.coords.length; i += 3) {
+      translatedCoords.push(triangle.coords[i] + translation[0]);   // x-coordinate
+      translatedCoords.push(triangle.coords[i + 1] + translation[1]); // y-coordinate
+      translatedCoords.push(triangle.coords[i + 2] + translation[2]); // z-coordinate
+  }
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufferCoords);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(translatedCoords), gl.STREAM_DRAW);
+  gl.vertexAttribPointer(attributeCoords, 3, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(attributeCoords);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufferColor);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(triangle.colors), gl.STREAM_DRAW);
+  gl.vertexAttribPointer(attributeColor, 3, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(attributeColor);
+
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+function drawPedestalAt(translation) {
+  // Define the pedestal's height and size
+  let pedestalHeight = 0.7;
+  let pedestalSize = [0.8, pedestalHeight, 0.8];
+  console.log("Pedestal translation:", translation);
+  // Draw the pedestal using the cube model
+  drawModel(pedestalModel, translation, pedestalSize, [0.5, 0.5, 0.5]); // Grey colored pedestal
+  if (numTimes == 0) {
+      xOffset = 1;
+      yOffset = -.2;
+  } 
+  else if (numTimes == 1) {
+      xOffset = 0;
+      yOffset = .4;
+  }
+  else if (numTimes == 2) {
+    xOffset = -1;
+    yOffset = 1;
+  }
+
+  // Draw the pyramid above the pedestal
+  console.log(translation[0]);
+  let pyramidBaseHeight = 0.0; 
+  let pyramidTranslation = [
+      translation[0] +xOffset , 
+      translation[1] + pedestalHeight + yOffset,  
+      translation[2] +zOffset
+  ]; 
+  drawPyramidAt(pyramidTranslation);
+  if (numTimes < 2) { 
+    numTimes++;
+  } else {numTimes = 0};
+}
+
+function drawModel(model, translation, scale, color) {
+  let vertices = new Float32Array(model.vertexPositions);
+  let indices = new Uint16Array(model.indices);
+  console.log("Model translation:", translation);
+  let colors = [];
+  for (let i = 0; i < vertices.length / 3; i++) {
+      colors.push(...color);
+  }
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufferCoords);
+  gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+  gl.vertexAttribPointer(attributeCoords, 3, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(attributeCoords);
+  
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufferColor);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+  gl.vertexAttribPointer(attributeColor, 3, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(attributeColor);
+  
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+
+  let modelMatrix = mat4.create();
+  mat4.translate(modelMatrix, modelMatrix, translation);
+  mat4.scale(modelMatrix, modelMatrix, scale);
+  
+  let mv = rotator.getViewMatrix();
+  mat4.multiply(mv, mv, modelMatrix);
+
+  gl.uniformMatrix4fv(u_view, false, mv);
+  gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.activeTexture(gl.TEXTURE0);
+}
+    function initGL() {
+      var vertexShaderSource = getTextContent("vshader");
+      var fragmentShaderSource = getTextContent("fshader");
+      
+      var prog = createProgram(gl, vertexShaderSource, fragmentShaderSource);
+      gl.useProgram(prog);
+      
+      u_projection = gl.getUniformLocation(prog, "u_projection");
+      u_view = gl.getUniformLocation(prog, "u_view");
+    
+      attributeCoords = gl.getAttribLocation(prog, "a_coords");
+      bufferCoords = gl.createBuffer();
+      
+      
+      attributeColor = gl.getAttribLocation(prog, "a_color");
+      bufferColor = gl.createBuffer();
+
+      texture = gl.createTexture();
+      console.log("Texture: " + texture);
+      loadTexture("feathers.jpg", texture, true);
+      console.log("Texture " + loadTexture("feathers.jpg", texture, true));
+      rotator = new TrackballRotator(canvas, draw, 5);
+
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LEQUAL);
+    }
+    
+    function init() {
+      try {
+        canvas = document.getElementById("webglcanvas");
+        var options = {alpha: false, depth: true};
+        gl = canvas.getContext("webgl", options) ||
+          canvas.getContext("experimental-webgl", options);
+        if (!gl) throw "Browser does not support WebGL";
+      }
+      catch (e) {
+        document.getElementById("canvas-holder").innerHTML =
+          "<p>Sorry, could not get a WebGL graphics context.</p>";
+        return;
+      }
+      try {
+        initGL();
+      }
+      catch (e) {
+        document.getElementById("canvas-holder").innerHTML =
+          "<p>Sorry, could not initialize the WebGL graphics context:" + e + "</p>";
+        return;
+      }
+      draw();
+    }
+    function getTextContent(elementID) {
+      return document.getElementById(elementID).textContent.trim();
+    }
+    
+  </script>
+</head>
+
+<body onload="init()">
+  <noscript>
+    <p><b>Sorry, but this page requires JavaScript.</b></p>
+  </noscript>
+
+  <div id="canvas-holder">
+    <canvas id="webglcanvas" width="500" height="500"></canvas>
+  </div>
+</body>
+</html>

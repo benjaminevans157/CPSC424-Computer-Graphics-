@@ -1,0 +1,479 @@
+<html>
+
+<head>
+	<title>Bump Mapping</title>
+
+	<script type="x-shader/x-vertex" id="vshader">
+    attribute vec3 a_coords;
+    attribute vec3 a_normal;
+    attribute vec2 a_texCoords;
+
+    uniform mat4 u_modelview;
+    uniform mat4 u_projection;
+
+    varying vec3 v_normal;
+    varying vec3 v_eyeCoords;
+    varying vec2 v_texCoords;
+
+	 // TODO: add shader parameters 
+	 //  - tangent is per-vertex and is passed along to the fragment shader
+	attribute vec3 a_tangent;
+	varying vec3 v_tangent;
+
+    void main() {
+        vec4 coords = vec4(a_coords,1.0);
+        vec4 eyeCoords = u_modelview * coords;
+        gl_Position = u_projection * eyeCoords;
+		v_tangent = normalize(a_tangent);
+        v_normal = normalize(a_normal);
+        v_eyeCoords = eyeCoords.xyz/eyeCoords.w;  // to accommodate perspective
+        v_texCoords = a_texCoords;
+    }
+
+    </script>
+
+	<script type="x-shader/x-fragment" id="fshader">
+    precision mediump float;
+
+    struct LightProperties {
+		bool enabled;
+		vec4 position;
+		vec3 color; 
+		vec3 ambient; 
+    };
+
+    struct MaterialProperties {
+		vec3 diffuseColor;
+		vec3 specularColor;
+		float specularExponent;
+    };
+
+    uniform LightProperties u_lights[4];
+    uniform MaterialProperties u_material;
+
+    uniform mat3 u_normalMatrix;
+    uniform sampler2D u_texture;  // image texture
+    uniform bool u_useTexture;    // whether to apply the image texture
+
+    varying vec3 v_normal;
+    varying vec3 v_eyeCoords;
+    varying vec2 v_texCoords;
+
+	 // TODO: add shader parameters
+	 //  - sampler variable for the bump map texture, the pixel dimensions of 
+	 //    the bump map texture, and the scale factor (strength) for the bump 
+	 //    map are pre-primitive
+	 //  - tangent is passed from the vertex shader
+	uniform sampler2D bumpmap;
+	uniform vec2 bumpmapSize;
+	uniform float bumpmapStrength;
+	varying vec3 v_tangent;
+
+    vec3 lightingEquation( LightProperties light,       
+                           MaterialProperties material,
+                           vec3 eyeCoords, // Eye coordinates for the point.
+                           vec3 N, // Normal vector to the surface.
+                           vec3 V  // Direction to viewer.
+                         ) {
+
+      vec3 diffuse;
+      if (u_useTexture) {   // 'replace' mode
+         diffuse = texture2D( u_texture, v_texCoords ).rgb;
+      }
+      else {
+         diffuse = material.diffuseColor;
+      }
+
+		vec3 reflection = vec3(0);
+		reflection += light.ambient*diffuse;
+	
+		vec3 L, R; // Light direction and reflected light direction.
+		if ( light.position.w == 0.0 ) { // directional light
+         L = normalize( light.position.xyz );
+		} else { // point light
+      	L = normalize( light.position.xyz/light.position.w - eyeCoords );
+		}
+		if (dot(L,N) <= 0.0) { // light does not illuminate the surface
+	      return reflection;
+		}
+
+		reflection += dot(L,N) * light.color * diffuse;
+	
+		R = -reflect(L,N);
+		if (dot(R,V) > 0.0) { // ray is reflected toward the the viewer
+     	   float factor = pow(dot(R,V),material.specularExponent);
+        	reflection += factor * material.specularColor * light.color;
+		}
+
+		return reflection;
+	 }
+
+    void main() {
+   	vec3 normal = normalize( v_normal );  // OC normal
+
+		// TODO - perturb the surface normal
+		//   use the corrected computation of Bu and Bv from the 10/23 slides
+		vec3 tangent = normalize( v_tangent );
+        vec3 binormal = cross(normal,tangent);
+        float bm0 = texture2D( bumpmap, v_texCoords ).r; 
+        float bmUp = texture2D( bumpmap, v_texCoords + vec2(0.0, 0.5/bumpmapSize.y) ).r;
+        float bmRight = texture2D( bumpmap, v_texCoords + vec2(1.0/bumpmapSize.x, 0.0) ).r;
+        vec3 bumpVector = (bmRight - bm0)*tangent + (bmUp - bm0)*binormal;
+        normal += bumpmapStrength*bumpVector;
+
+		normal = normalize( u_normalMatrix*normal );  // EC (perturbed) normal
+
+   	vec3 viewDirection = normalize( -v_eyeCoords);  // (Assumes a perspective projection.)
+
+		vec3 color = vec3(0.0);  // Start with black
+		for (int i = 0; i < 4; i++) {  // Add in the contribution from light i.
+		   if (u_lights[i].enabled) { // Light can only contribute color if enabled.
+				color += lightingEquation( u_lights[i], u_material, 
+							   					   v_eyeCoords, normal, viewDirection );
+			}
+		}		
+	
+   	gl_FragColor = vec4(color,1);
+     }
+    </script>
+
+	<script src="../webgl/gl-matrix-min.js"></script>
+
+	<script src="../webgl/webgl-utils.js"></script>
+	<script src="../webgl/webgl-maputils.js"></script>
+	<script src="../webgl/basic-object-models-tangents.js"></script>
+	<script src="../webgl/trackball-rotator.js"></script>
+
+	<script>
+		let canvas;    // DOM object corresponding to the canvas
+		let gl;        // webgl graphics context for drawing on the canvas
+
+		let rotator;
+
+		let projection = mat4.create();    // projection matrix
+		let modelview = mat4.create();     // modelview matrix
+		let normalMatrix = mat3.create();  // for transforming normal vectors
+
+		let a_coords_loc;       // Location of attributes
+		let a_normal_loc;
+		let a_texCoords_loc;
+
+		let a_coords_buffer;
+		let a_normal_buffer;
+		let a_texcoords_buffer;
+
+		let u_modelview_loc;       // Locations for uniform matrices
+		let u_projection_loc;
+		let u_normalMatrix_loc;
+
+		let u_material_loc;
+		let u_lights_loc;
+
+		let u_texture_loc;   // An image texture
+		let u_useTexture_loc;// Tells whether to use texture for diffuseColor
+
+		// TODO: location variables and buffers for the bumpmap-related shader 
+		//  parameters
+		let u_bumpmap;         // A bumpmap texture (grayscale)
+		let u_bumpmapSize;     // A vec2 giving bumpmap texture size
+		let u_bumpmapStrength; // A float telling how strong the bump effect is (can be negative)	
+
+		let texture;  // The image texture.
+
+		// TODO: variables for the bump map texture object and image
+		let bumpmap;  // The bumpmap texture.
+
+		let textureLoading = false;
+		let bumpmapLoading = false;
+		const bumpmapURLs = [
+        	"textures/dimples-height-map.png",
+        	"textures/marble-height-map.png",
+        	"textures/brick-height-map.jpg",
+        	"textures/metal-height-map.png",
+        	"textures/random-height-map.png"
+		];
+		// draw an object with texture and bumpmap applied
+		//  - model is the object geometry
+		//  - strength is the strength of the bump effect
+		function drawObject(model, strength) {
+			let index_buffer = gl.createBuffer();
+			let count = model.indices.length;
+
+			gl.bindBuffer(gl.ARRAY_BUFFER, a_coords_buffer);
+			gl.bufferData(gl.ARRAY_BUFFER, model.vertexPositions, gl.STATIC_DRAW);
+			gl.vertexAttribPointer(a_coords_loc, 3, gl.FLOAT, false, 0, 0);
+			gl.enableVertexAttribArray(a_coords_loc);
+
+			gl.bindBuffer(gl.ARRAY_BUFFER, a_normal_buffer);
+			gl.bufferData(gl.ARRAY_BUFFER, model.vertexNormals, gl.STATIC_DRAW);
+			gl.vertexAttribPointer(a_normal_loc, 3, gl.FLOAT, false, 0, 0);
+			gl.enableVertexAttribArray(a_normal_loc);
+
+			// TODO: set data for the vertex tangents
+			gl.bindBuffer(gl.ARRAY_BUFFER, model.tangentBuffer);
+    		gl.bufferData(gl.ARRAY_BUFFER, modelData.vertexTangents, gl.STATIC_DRAW);
+
+			gl.bindBuffer(gl.ARRAY_BUFFER, a_texcoords_buffer);
+			gl.bufferData(gl.ARRAY_BUFFER, model.vertexTextureCoords,
+				gl.STATIC_DRAW);
+			gl.vertexAttribPointer(a_texCoords_loc, 2, gl.FLOAT, false, 0, 0);
+			gl.enableVertexAttribArray(a_texCoords_loc);
+
+			gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, index_buffer);
+			gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, model.indices, gl.STATIC_DRAW);
+
+			// set up sampler variables - using texture unit 0 for the (color) 
+			// texture, 1 for the bumpmap
+			gl.uniform1i(u_texture_loc, 0);
+
+			// TODO: set the shader parameter values for the bumpmap-related
+			//  parameters
+			//   - use texture unit 1 for the bumpmap texture
+			//   - use the .width and .height fields from the bumpmap image for
+			//     the size
+			//   - note the strength parameter to drawObject - this is the value
+			//     to use for the bump map strength
+			// Bind the color texture
+			gl.activeTexture(gl.TEXTURE0);
+			gl.bindTexture(gl.TEXTURE_2D, texture);
+			gl.uniform1i(u_texture_loc, 0);
+
+			// Bind the bump map texture
+			gl.activeTexture(gl.TEXTURE1);
+			gl.bindTexture(gl.TEXTURE_2D, bumpmap);
+			gl.uniform1i(u_bumpmap, 1);
+
+			// Set bump map size and strength
+			gl.uniform2f(u_bumpmapSize, bumpmapImageWidth, bumpmapImageHeight); // Replace with actual image dimensions
+			gl.uniform1f(u_bumpmapStrength, strength);
+			
+			gl.uniformMatrix4fv(u_modelview_loc, false, modelview);
+			gl.uniformMatrix4fv(u_projection_loc, false, projection);
+			gl.uniformMatrix3fv(u_normalMatrix_loc, false, normalMatrix);
+
+			gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_SHORT, 0);
+		}
+
+		// draw on the canvas
+		function draw() {
+			// set color for clear and clear canvas, depth buffer
+			gl.clearColor(0.8, 0.8, 0.8, 1);
+			gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+			// set up viewing and projection
+			mat4.ortho(projection, -8, 8, -8, 8, -5, 15);
+			modelview = rotator.getViewMatrix();
+
+			// set up modeling part of modelview
+			mat4.rotateX(modelview, modelview, Math.PI / 8);
+			mat4.rotateY(modelview, modelview, Math.PI / 8);
+
+			setLight(0, [10, 10, 0, 1], [1, 1, 1], [.1, .1, .1]);
+
+			let stack = [];
+			stack.push(mat4.clone(modelview));
+
+			// draw the shapes
+			let shapes = [
+				uvTorus(2, 1, 64, 32), cube(4),
+				uvCylinder(2, 6, 64)
+			];
+			let diffuse = [
+				[0.8, 0.8, 0.8], [0.8, 0.2, 0.2],
+				[0.2, 0.8, 0.2], [0.2, 0.2, 0.8]
+			];
+
+			gl.uniform1i(u_useTexture_loc, 0); // set to 1 to turn on image 
+			// texture (and uncomment the texture loading in initGL())
+			stack.push(mat4.clone(modelview));
+			mat4.translate(modelview, modelview, [-5, 0, 0]);
+			for (let i = 0; i < shapes.length; i++) {
+				// get matrix for transforming normals
+				mat3.normalFromMat4(normalMatrix, modelview);
+
+				gl.uniformMatrix3fv(u_normalMatrix_loc, false, normalMatrix);
+				gl.uniformMatrix4fv(u_modelview_loc, false, modelview);
+				gl.uniformMatrix4fv(u_projection_loc, false, projection);
+
+				setMaterial(diffuse[i], [.8, .8, .8], 32);
+
+
+				// TODO: set the active texture unit to 1 (the texture unit being 
+				//  used for the bump map texture) and bind the bumpmap texture 
+				//  object
+				// Bind the color texture
+				gl.activeTexture(gl.TEXTURE0);
+        		gl.bindTexture(gl.TEXTURE_2D, texture);
+
+        		// Bind the bump map texture
+        		gl.activeTexture(gl.TEXTURE1); // Activate texture unit 1
+        		gl.bindTexture(gl.TEXTURE_2D, bumpmapTexture); // Bind the bump map texture
+				gl.uniform1i(u_bumpmap, 1); 
+				drawObject(shapes[i], 10);
+
+				mat4.translate(modelview, modelview, [5, 0, 0]);
+			}
+			modelview = stack.pop();
+		}
+		function loadBumpmapTexture() {
+    		let bumpmapNum = Number(document.getElementById("bumpmap").value); // Assuming you have a dropdown to select bumpmaps
+    		let url = bumpmapURLs[bumpmapNum]; // Use the selected bump map URL
+
+    		let img = new Image();
+    		img.onload = function() {
+        		gl.activeTexture(gl.TEXTURE1);
+        		gl.bindTexture(gl.TEXTURE_2D, bumpmap);
+        		gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gl.LUMINANCE, gl.UNSIGNED_BYTE, img);
+        		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        		bumpmapLoading = false;
+        		gl.uniform2f(u_bumpmapSize, img.width, img.height);
+        		draw(); // Redraw scene
+    		};
+    		img.onerror = function() {
+        		console.error("Failed to load bumpmap texture:", url);
+    		};
+    		img.src = url;
+		}
+		
+		function setMaterial(diffuse, specular, shininess) {
+			gl.uniform3fv(u_material_loc.diffuseColor, diffuse);
+			gl.uniform3fv(u_material_loc.specularColor, specular);
+			gl.uniform1f(u_material_loc.specularExponent, shininess);
+		}
+
+		function setLight(which, position, color, ambient) {
+			gl.uniform1i(u_lights_loc[which].enabled, 1);
+			gl.uniform4fv(u_lights_loc[which].position, position);
+			gl.uniform3fv(u_lights_loc[which].color, color);
+			gl.uniform3fv(u_lights_loc[which].ambient, ambient);
+		}
+
+		// initialize the webgl graphics context
+		function initGL() {
+			// set up shader program
+			let prog = createProgram(gl, getTextContent("vshader"),
+				getTextContent("fshader"));
+			gl.useProgram(prog);
+
+			// set up locations and buffers for shader parameters
+			a_coords_loc = gl.getAttribLocation(prog, "a_coords");
+			a_normal_loc = gl.getAttribLocation(prog, "a_normal");
+			a_texCoords_loc = gl.getAttribLocation(prog, "a_texCoords");
+
+			u_modelview_loc = gl.getUniformLocation(prog, "u_modelview");
+			u_projection_loc = gl.getUniformLocation(prog, "u_projection");
+			u_normalMatrix_loc = gl.getUniformLocation(prog, "u_normalMatrix");
+
+			u_texture_loc = gl.getUniformLocation(prog, "u_texture");
+			u_useTexture_loc = gl.getUniformLocation(prog, "u_useTexture");
+
+			// TODO: initialize the bumpmap-related location variables
+			u_bumpmap = gl.getUniformLocation(prog, "u_bumpmap");
+			u_bumpmapSize = gl.getUniformLocation(prog, "u_bumpmapSize");
+			u_bumpmapStrength = gl.getUniformLocation(prog, "u_bumpmapStrength");	
+			
+			u_material_loc = {
+				diffuseColor: gl.getUniformLocation(prog,
+					"u_material.diffuseColor"),
+				specularColor: gl.getUniformLocation(prog,
+					"u_material.specularColor"),
+				specularExponent: gl.getUniformLocation(prog,
+					"u_material.specularExponent")
+			};
+			u_lights_loc = new Array(4);
+			for (let i = 0; i < 4; i++) {
+				u_lights_loc[i] = {
+					enabled: gl.getUniformLocation(prog,
+						"u_lights[" + i + "].enabled"),
+					position: gl.getUniformLocation(prog,
+						"u_lights[" + i + "].position"),
+					color: gl.getUniformLocation(prog, "u_lights[" + i + "].color"),
+					ambient: gl.getUniformLocation(prog,
+						"u_lights[" + i + "].ambient"),
+				};
+			}
+
+			a_coords_buffer = gl.createBuffer();
+			a_normal_buffer = gl.createBuffer();
+
+			// TODO: create a buffer for the vertex tangents
+			a_tangent_loc =  gl.getAttribLocation(prog, "a_tangent");
+			gl.enableVertexAttribArray(a_tangent_loc);
+			a_texcoords_buffer = gl.createBuffer();
+
+			// set up rotator
+			rotator = new TrackballRotator(canvas, draw, 5);
+
+			// enable depth test
+			gl.enable(gl.DEPTH_TEST);
+
+			gl.uniform3f(u_material_loc.diffuseColor, .5, .5, .5);
+			gl.uniform3f(u_material_loc.specularColor, .8, .8, .8);
+			gl.uniform1f(u_material_loc.specularExponent, 32);
+
+			for (let i = 0; i < 4; i++) {
+				gl.uniform1i(u_lights_loc[i].enabled, 0);
+			}
+
+			texture = gl.createTexture();
+			// uncomment to load an image texture
+			// loadTexture("../textures/glassblk.jpg", texture, true);
+
+			// TODO: create a texture object for the bumpmap, create an Image 
+			//  object (new Image()) for the bumpmap image, and use
+			//  loadBumpmapTexture (from webgl-maputils.js) to load the bumpmap
+			//  (set flip to true)
+			bumpmap = gl.createTexture();
+			
+		}
+
+		// initialize program
+		// (called after page has been loaded)
+		function init() {
+			try {
+				canvas = document.getElementById("webglcanvas");
+				let options = {  // no need for alpha channel
+					alpha: false,
+					depth: true
+				};
+				gl = canvas.getContext("webgl", options) ||
+					canvas.getContext("experimental-webgl", options);
+				if (!gl) {
+					throw "Browser does not support WebGL";
+				}
+			}
+			catch (e) {
+				document.getElementById("canvas-holder").innerHTML =
+					"<p>Sorry, could not get a WebGL graphics context.</p>";
+				return;
+			}
+			try {
+				initGL();  // initialize the WebGL graphics context
+			}
+			catch (e) {
+				document.getElementById("canvas-holder").innerHTML =
+					"<p>Sorry, could not initialize the WebGL graphics context:" + e + "</p>";
+				return;
+			}
+			draw();    // draw the image
+		}
+		function getTextContent(elementID) {
+    var element = document.getElementById(elementID);
+    return element.textContent || element.innerText;
+}
+	</script>
+</head>
+
+<body onload="init()">
+	<noscript>
+		<p><b>Sorry, but this page requires JavaScript.</b></p>
+	</noscript>
+
+	<div id="canvas-holder">
+		<canvas id="webglcanvas" width="500" height="500"></canvas>
+	</div>
+
+</body>
+
+</html>

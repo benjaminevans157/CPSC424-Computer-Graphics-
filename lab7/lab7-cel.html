@@ -1,0 +1,352 @@
+<html>
+
+<head>
+    <title>Lighting and Shading</title>
+
+    <script type="x-shader/x-vertex" id="vshader">
+        struct LightProperties {
+            bool enabled;
+            vec4 position;
+            vec3 color;
+            vec3 ambientColor;  // Added ambientColor 
+        };
+        
+        struct MaterialProperties {
+            vec3 diffuseColor;
+            vec3 ambientColor;  // Added ambientColor
+            vec3 specularColor;
+            float specularExponent;   // shininess
+        };
+        
+        struct Transforms {
+            mat4 modelview;
+            mat4 projection;
+            mat3 normalMatrix;
+        };
+        
+        attribute vec3 a_coords;  // vertex coordinates (in object coordinates)
+        attribute vec3 a_normal;  // surface normal (in object coordinates)
+        
+        uniform Transforms u_transform;
+        
+        varying vec4 v_eyecoords;
+        varying vec3 v_normal;
+        uniform bool u_silhouette;
+
+        
+        void main() {
+            vec4 coords = vec4(a_coords,1.0);
+	            if ( u_silhouette ) {
+	                coords += vec4(.03*a_normal,0);
+	            }
+            v_eyecoords = u_transform.modelview * coords; // vertex position in eye coordinates
+            gl_Position = u_transform.projection * v_eyecoords;
+            v_normal = normalize(u_transform.normalMatrix * a_normal); // transformed normal
+        }
+        </script>
+        
+
+        <script type="x-shader/x-fragment" id="fshader">
+            precision mediump float;
+            
+            struct LightProperties {
+                bool enabled;
+                vec4 position;
+                vec3 color;
+                vec3 ambientColor;
+            };
+            
+            struct MaterialProperties {
+                vec3 diffuseColor;
+                vec3 ambientColor;
+                vec3 specularColor;
+                float specularExponent;
+            };
+            
+            uniform MaterialProperties u_material;
+            uniform LightProperties u_light[4];
+            
+            varying vec4 v_eyecoords;
+            varying vec3 v_normal;
+            
+            const float steps = 5.0;  
+
+            uniform bool u_silhouette;
+
+
+            vec3 celShading(vec3 color) {
+                return floor(color * steps) / steps;
+            }
+
+            vec3 lightingEquation( LightProperties light,       
+            MaterialProperties material, 
+            vec3 point, 
+            vec3 N, 
+            vec3 V ) {
+                vec3 color = vec3(0.0);  // Start with black
+
+                vec3 L, R;
+                if (light.position.w == 0.0) { // directional light
+                    L = normalize(light.position.xyz);   
+                } else { // point light
+                    L = normalize(light.position.xyz/light.position.w - point);
+                }
+
+                if (dot(L,N) <= 0.0) { // light does not illuminate the surface
+                    return color; 
+                }
+
+                // diffuse component
+                color += dot(L,N) * light.color * material.diffuseColor;
+
+                // ambient component
+                color += light.ambientColor * material.ambientColor;
+
+                // specular component
+                R = -reflect(L,N);
+                if (dot(R,V) > 0.0) { // ray is reflected toward the viewer
+                    float factor = pow(dot(R,V), material.specularExponent);
+                    color += factor * material.specularColor * light.color;
+                }
+
+                return celShading(color);
+            }
+
+            
+            void main() {
+                if (u_silhouette == true) {
+                    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); // Black color
+                } else {
+                vec3 N = normalize(v_normal);
+                vec3 V = normalize(-v_eyecoords.xyz);
+            
+                vec3 color = vec3(0.0);
+                for (int i = 0; i < 4; i++) {
+                    if (u_light[i].enabled) {
+                        color += lightingEquation(u_light[i], u_material, v_eyecoords.xyz, N, V);
+                    }
+                }
+            
+                gl_FragColor = vec4(color, 1.0);
+            }
+        }
+            </script>
+            
+
+    <script src="../webgl/gl-matrix-min.js"></script>
+
+    <script src="../webgl/webgl-utils.js"></script>
+    <script src="../webgl/basic-object-models-IFS.js"></script>
+    <script src="../webgl/trackball-rotator.js"></script>
+
+    <script>
+        let canvas;    // DOM object corresponding to the canvas
+        let gl;        // webgl graphics context for drawing on the canvas
+
+        let rotator;   // mouse rotator
+
+        let projection = mat4.create();    // projection matrix
+        let modelview = mat4.create();     // modelview matrix
+        let normalMatrix = mat3.create();  // for transforming normal vectors
+
+        // shader parameter locations
+        let a_coords_loc;
+        let a_normal_loc;
+        let u_transform_loc;
+        let u_material_loc;
+        let u_light_locs;
+
+        let a_coords_buffer;    // Buffer to hold the values for a_coords.
+        let a_normal_buffer;    // Buffer for a_normal.
+        let index_buffer;
+        let prog;  // Declare prog as a global variable
+
+        // set up the model data
+        function setModel(shape) {
+            gl.bindBuffer(gl.ARRAY_BUFFER, a_coords_buffer);
+            gl.bufferData(gl.ARRAY_BUFFER, shape.vertexPositions,
+                gl.STATIC_DRAW);
+            gl.vertexAttribPointer(a_coords_loc, 3, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(a_coords_loc);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, a_normal_buffer);
+            gl.bufferData(gl.ARRAY_BUFFER, shape.vertexNormals, gl.STATIC_DRAW);
+            gl.vertexAttribPointer(a_normal_loc, 3, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(a_normal_loc);
+
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, index_buffer);
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, shape.indices,
+                gl.STATIC_DRAW);
+        }
+
+        // set the shader parameters for a material
+        function setMaterial(diffuse, ambient, specular, shininess) {
+    gl.uniform3fv(u_material_loc.diffuseColor, diffuse);
+    gl.uniform3fv(u_material_loc.ambientColor, ambient);  // Set ambientColor
+    gl.uniform3fv(u_material_loc.specularColor, specular);
+    gl.uniform1f(u_material_loc.specularExponent, shininess);
+}
+
+        // set the shader parameters for a light
+        function setLight(index, enabled, position, color, ambientColor) {
+    gl.uniform1i(gl.getUniformLocation(prog, "u_light[" + index + "].enabled"), enabled);
+    gl.uniform4fv(gl.getUniformLocation(prog, "u_light[" + index + "].position"), position);
+    gl.uniform3fv(gl.getUniformLocation(prog, "u_light[" + index + "].color"), color);
+    gl.uniform3fv(gl.getUniformLocation(prog, "u_light[" + index + "].ambientColor"), ambientColor); // Added Ambient Color
+}
+
+        // set the shader parameters for modelview and projection transforms
+        function setTransform(modelview, projection) {
+            // get matrix for transforming normals
+            mat3.normalFromMat4(normalMatrix, modelview);
+
+            // set up shader parameters
+            gl.uniformMatrix3fv(u_transform_loc.normalMatrix, false,
+                normalMatrix);
+            gl.uniformMatrix4fv(u_transform_loc.modelview, false, modelview);
+            gl.uniformMatrix4fv(u_transform_loc.projection, false, projection);
+        }
+
+        // draw on the canvas
+        function draw() {
+            // set color for clear  and clear canvas, depth buffer
+            gl.clearColor(.9, .9, .9, 1);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+            // set up viewing and projection
+            mat4.ortho(projection, -5, 5, -5, 5, 3, 8);
+            //	  mat4.lookAt(modelview,[0,0,5],[0,0,0],[0,1,0]);
+            modelview = rotator.getViewMatrix();
+
+            // set up modeling part of modelview
+            mat4.rotateX(modelview, modelview, Math.PI / 8);
+            mat4.rotateY(modelview, modelview, Math.PI / 8);
+
+            // draw the shape
+            let shape = uvTorus(2, 1, 64, 32);
+             // Draw silhouette first:
+            gl.enable(gl.CULL_FACE);
+            gl.cullFace(gl.FRONT);
+    
+            setSilhouetteUniform(1);
+            setTransform(modelview, projection);
+            setMaterial([0.8, 0.8, 0.8], [0.2, 0.2, 0.2], [0.25, 0.25, 0.25], 32);
+            setModel(shape);
+            setLight(0, 1, [0, 0, 10, 1], [1, 1, 1], [0.2, 0.2, 0.2]);
+            setLight(1, 1, [10, 0, 0, 1], [.4, 0, 1], [.3, .4, .5]);
+            setLight(2, 1, [-10, 0, -5, 1], [0, .5, .5], [.6, .4, 0]);
+            setLight(3, 1, [0, 5, 3, 1], [.2, .2, 0], [.6, .2, .1]);
+            gl.drawElements(gl.TRIANGLES, shape.indices.length,
+                gl.UNSIGNED_SHORT, 0);
+            // Draw the actual object:
+            gl.cullFace(gl.BACK);
+            setSilhouetteUniform(0);
+            setTransform(modelview, projection);
+            setMaterial([0.8, 0.8, 0.8], [0.2, 0.2, 0.2], [0.25, 0.25, 0.25], 32);
+            setModel(shape);
+            setLight(0, 1, [0, 0, 10, 1], [1, 1, 1], [0.2, 0.2, 0.2]);
+            setLight(1, 1, [10, 0, 0, 1], [.4, 0, 1], [.3, .4, .5]);
+            setLight(2, 1, [-10, 0, -5, 1], [0, .5, .5], [.6, .4, 0]);
+            setLight(3, 1, [0, 5, 3, 1], [.2, .2, 0], [.6, .2, .1]);
+            
+            gl.drawElements(gl.TRIANGLES, shape.indices.length,
+                gl.UNSIGNED_SHORT, 0);
+
+        }
+        function setSilhouetteUniform(value) {
+            // Get the location of the u_silhouette uniform in the shader
+            let silhouetteUniformLocation = gl.getUniformLocation(prog, "u_silhouette");
+            gl.uniform1i(silhouetteUniformLocation, value ? 1 : 0);
+        }
+        // initialize the webgl graphics context
+        function initGL() {
+            // set up shader program
+            let vertexShaderSource = getTextContent("vshader");
+            let fragmentShaderSource = getTextContent("fshader");
+             prog = createProgram(gl, vertexShaderSource,
+                fragmentShaderSource);
+            gl.useProgram(prog);
+
+            // set up locations and buffers for shader parameters
+            a_coords_loc = gl.getAttribLocation(prog, "a_coords");
+            a_normal_loc = gl.getAttribLocation(prog, "a_normal");
+
+            u_transform_loc = {
+                modelview: gl.getUniformLocation(prog, "u_transform.modelview"),
+                projection: gl.getUniformLocation(prog,
+                    "u_transform.projection"),
+                normalMatrix: gl.getUniformLocation(prog,
+                    "u_transform.normalMatrix")
+            };
+
+            u_material_loc = {
+    diffuseColor: gl.getUniformLocation(prog, "u_material.diffuseColor"),
+    ambientColor: gl.getUniformLocation(prog, "u_material.ambientColor"),  // Added Ambient Color
+    specularColor: gl.getUniformLocation(prog, "u_material.specularColor"),
+    specularExponent: gl.getUniformLocation(prog, "u_material.specularExponent")
+};
+
+u_light_loc = {
+    enabled: gl.getUniformLocation(prog, "u_light.enabled"),
+    position: gl.getUniformLocation(prog, "u_light.position"),
+    color: gl.getUniformLocation(prog, "u_light.color"),
+    ambientColor: gl.getUniformLocation(prog, "u_light.ambientColor")  // Added Ambient Color
+};
+
+
+            a_coords_buffer = gl.createBuffer();
+            a_normal_buffer = gl.createBuffer();
+            index_buffer = gl.createBuffer();
+
+            // set up rotator
+            rotator = new TrackballRotator(canvas, draw, 5);
+
+            // enable depth test
+            gl.enable(gl.DEPTH_TEST);
+        }
+
+        // initialize program
+        // (called after page has been loaded)
+        function init() {
+            try {
+                canvas = document.getElementById("webglcanvas");
+                let options = {  // no need for alpha channel
+                    alpha: false,
+                    depth: true
+                };
+                gl = canvas.getContext("webgl", options) ||
+                    canvas.getContext("experimental-webgl", options);
+                if (!gl) {
+                    throw "Browser does not support WebGL";
+                }
+            }
+            catch (e) {
+                document.getElementById("canvas-holder").innerHTML =
+                    "<p>Sorry, could not get a WebGL graphics context.</p>";
+                return;
+            }
+            try {
+                initGL();  // initialize the WebGL graphics context
+            }
+            catch (e) {
+                document.getElementById("canvas-holder").innerHTML =
+                    "<p>Sorry, could not initialize the WebGL graphics context:" + e + "</p>";
+                return;
+            }
+            draw();    // draw the image
+        }
+    </script>
+</head>
+
+<body onload="init()">
+    <noscript>
+        <p><b>Sorry, but this page requires JavaScript.</b></p>
+    </noscript>
+
+    <div id="canvas-holder">
+        <canvas id="webglcanvas" width="500" height="500"></canvas>
+    </div>
+
+</body>
+
+</html>

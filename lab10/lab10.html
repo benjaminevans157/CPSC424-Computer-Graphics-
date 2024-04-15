@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<head>
+<meta charset="UTF-8">
+<title>Lab10</title>
+<style>
+</style>
+<script type="importmap">
+  {
+     "imports": {
+        "three": "../threejs/three.module.min.js",
+        "addons/": "../threejs/"
+     }
+  }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "addons/controls/OrbitControls.js";
+import { ParametricGeometry } from "addons/geometries/ParametricGeometry.js";
+
+
+"use strict";
+
+let scene, camera, renderer;  // Three.js rendering basics.
+
+let canvas;  // The canvas on which the image is rendered.
+
+// The three objects that can be viewed.  Each is a scene graph containing only visible objects.
+let axleModel;       // A model containing only an axle (thin cylinder with wheel on each end).
+let carModel;        // A model containing only a car.
+let diskworldModel;  // A model containing the diskworld.
+
+let currentModel;   // Contains the visible objects in the scene, but
+                    // not the lights or camera.  The model can be
+			        // rotated using the keyboard.  It is one of the
+					// three above models.
+
+// Nodes in the scene graphs that are modified as part of the animation:
+let carAxle1, carAxle2;  // The two axles in the carModel.
+let diskworldAxle1, diskworldAxle2;  // The two axles in the car that is part of diskworld.
+let growingTree;  // The tree in the center of diskworld that grows.
+let carRotator;  // An object at the origin that has the diskworld car as its child;
+                 // rotating this object about the y-axis drives the car aroudn the disk.
+
+let textures;
+let textureURLs = [
+   "../textures/maelstrm.jpg",
+   "../textures/ambrosia.jpg"
+];
+
+let offset = .2
+
+/*  Create the scene graph.  This function is called once, as soon as the page loads.
+ *  The renderer has already been created before this function is called.
+ */
+ function createWorld() {
+    renderer.setClearColor(0x444444);  // Dark gray background
+
+    // TODO create scene object
+    scene = new THREE.Scene();
+    
+    // TODO create camera
+    camera = new THREE.PerspectiveCamera(65, canvas.width/canvas.height, 1, 30);
+    camera.position.z = 15;
+
+    // TODO create lights
+    addLights();  // Add various lights to the scene
+
+    // TODO create the geometry
+    currentModel = new THREE.Object3D();
+
+    let floor = new THREE.Mesh(
+        new THREE.CylinderGeometry(10.5, 10.5, 0.5, 32),
+        new THREE.MeshLambertMaterial({ color: 0xd5ead8 })
+    );
+    floor.position.y = -0.3;
+    currentModel.add(floor);
+
+    let primitiveGeometry = new THREE.SphereGeometry(0.5, 32, 32); 
+    let primitiveMaterial = new THREE.MeshPhongMaterial({
+        color: 0x15695f, // Blueish-Green
+        specular: 0x158b5f, // Slightly different color for specular highlight
+        shininess: 100
+    });
+    let primitive = new THREE.Mesh(primitiveGeometry, primitiveMaterial);
+    primitive.position.set(0, 2.5, 0); // Adjust position so it's on top of the pedestal
+    
+    let pedestal1 = createPedestal(-3, 1, 2);
+    currentModel.add(pedestal1);
+    primitive.position.set(-3, 2.5, 2);
+    currentModel.add(primitive);
+
+
+    // Add a trefoil knot curve
+    let trefoilKnotCurve = new THREE.TorusKnotGeometry(1, 0.4, 100, 16, 2, 3); 
+    let knotMaterial = new THREE.MeshLambertMaterial({ 
+        color: 0xb45f06 
+    }); // Orangish-Red
+    let trefoilKnot = new THREE.Mesh(trefoilKnotCurve, knotMaterial);
+    let pedestal2 = createPedestal(4, 1, 4); 
+    currentModel.add(pedestal2);
+    trefoilKnot.position.set(4, 3.7, 4); 
+    currentModel.add(trefoilKnot);
+
+    // Create and add pyramid to the scene
+    let pyramid = createPyramid();
+    currentModel.add(pyramid);
+    let pedestal3 = createPedestal(-6, 1, -4);
+    currentModel.add(pedestal3);
+    pyramid.position.set(-6, 2.5, -4);
+    currentModel.add(pyramid);
+
+    // Create and add trefoil knot surface to the scene
+    let material = new THREE.MeshPhongMaterial({
+        color: 0x274e13, // Dark Green
+        specular: 0x444444,
+        shininess: 20,
+        side: THREE.DoubleSide
+    });
+    let surfaceGeometry = new ParametricGeometry(surfaceFunction, 64, 64);
+    let surface = new THREE.Mesh(surfaceGeometry, material);
+    surface.scale.set(.2, .2, .2);
+    let pedestal4 = createPedestal(2, 1, -4); 
+    currentModel.add(pedestal4);
+    surface.position.set(2, 3, -4); 
+    currentModel.add(surface);
+
+
+    // Create exhibition display
+    let exhibitionDisplay = createExhibitionDisplay();
+    exhibitionDisplay.position.set(0, 0, 0); // Central position
+    currentModel.add(exhibitionDisplay);
+
+    // Clone the exhibition display
+    let exhibitionDisplayClone1 = exhibitionDisplay.clone();
+    exhibitionDisplayClone1.position.set(-5, 0, 5); // Different position
+    currentModel.add(exhibitionDisplayClone1);
+
+    let exhibitionDisplayClone2 = exhibitionDisplay.clone();
+    exhibitionDisplayClone2.position.set(5, 0, -5); // Different position
+    exhibitionDisplayClone2.rotation.y = Math.PI / 4; 
+    currentModel.add(exhibitionDisplayClone2);
+
+    // Create spotlights for each object with a pedestal with appropriate cone angles
+    createSpotlightForObject(primitive, Math.PI / 12); // Narrower for the sphere
+    createSpotlightForObject(trefoilKnot, Math.PI / 4); // Wider for the trefoil knot
+    createSpotlightForObject(pyramid, Math.PI / 12); // Narrower for the pyramid
+    createSpotlightForObject(surface, Math.PI / 10); // Medium for the surface
+
+    currentModel.rotation.set(0.1, 0, 0); // Slightly tilt the model
+    scene.add(currentModel);
+}
+function addLights() {
+    // Ambient light
+    let ambientLight = new THREE.AmbientLight(0x220311); // Dimmer ambient light
+    scene.add(ambientLight);
+
+    // Point light - Placed in world coordinates
+    let pointLight = new THREE.PointLight(0xffe599, 0.2, 100); 
+    pointLight.position.set(-10, 10, -10); 
+    scene.add(pointLight);
+
+    // Directional light - Viewer light
+    let cameraLight = new THREE.DirectionalLight(0xffe599, 0.25); 
+    cameraLight.position.copy(camera.position); // Copying camera's position
+    cameraLight.target.position.set(0, 0, 0); 
+    scene.add(cameraLight);
+
+    // Additional light - Using WC
+    let worldLight = new THREE.DirectionalLight(0xffe599, 0.1); 
+    worldLight.position.set(5, 10, 5); 
+    worldLight.target.position.set(0, 0, 0); 
+    scene.add(worldLight);
+}
+// Function to create a spotlight targeting an object
+function createSpotlightForObject(object, coneAngle, color = 0xffffff) {
+        let spotlight = new THREE.SpotLight(color, 12); 
+        spotlight.position.set(object.position.x, object.position.y + 6, object.position.z);
+        spotlight.target = object;
+        spotlight.angle = coneAngle; // Custom cone angle
+        spotlight.distance = 13;
+        spotlight.penumbra = 1; 
+        scene.add(spotlight);
+}
+function createPyramid() {
+    let vertices = new Float32Array([
+        0, 1, 0,  // Top vertex
+        -1, -1, 1,  // Base vertices
+        1, -1, 1,
+
+        0, 1, 0,
+        1, -1, 1,
+        1, -1, -1,
+
+        0, 1, 0,
+        1, -1, -1,
+        -1, -1, -1,
+
+        0, 1, 0,
+        -1, -1, -1,
+        -1, -1, 1,
+
+        -1, -1, 1,  // Base face
+        1, -1, -1,
+        1, -1, 1,
+
+        -1, -1, 1,
+        -1, -1, -1,
+        1, -1, -1
+    ]);
+
+    let pyramidGeometry = new THREE.BufferGeometry();
+    pyramidGeometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+    pyramidGeometry.computeVertexNormals();
+
+    let pyramidMaterial = new THREE.MeshLambertMaterial({
+        color: 0x6a0dad, // Purple
+        emissive: 0x220066 // Dark purple emission
+    });
+
+    let pyramid = new THREE.Mesh(pyramidGeometry, pyramidMaterial);
+    pyramid.position.set(-5, 1, 0); 
+    return pyramid;
+}
+function createExhibitionDisplay() {
+    let display = new THREE.Group();
+
+    // Base of the display
+    let baseGeometry = new THREE.BoxGeometry(2.5, 0.1, 2.5);  // Slightly larger base
+    let baseMaterial = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
+    let base = new THREE.Mesh(baseGeometry, baseMaterial);
+    display.add(base);
+
+    // Sphere
+    let sphereGeometry = new THREE.SphereGeometry(0.4, 32, 32);
+    let sphereMaterial = new THREE.MeshPhongMaterial({
+        color: 0x741b47, // Burgundy
+        specular: 0x963e69, // Darker shade
+        shininess: 60
+    });    
+    let sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+    sphere.position.set(-0.8, 0.45, 0.8);
+    display.add(sphere);
+
+    // Cube
+    let cubeGeometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+    let cubeMaterial = new THREE.MeshBasicMaterial({ color: 0xab8c2d }); // Bronze
+    let cube = new THREE.Mesh(cubeGeometry, cubeMaterial);
+    cube.position.set(0.8, 0.3, -0.8);
+    display.add(cube);
+
+    // Torus
+    let torusGeometry = new THREE.TorusGeometry(0.3, 0.1, 16, 100);
+    let torusMaterial = new THREE.MeshPhongMaterial({ color: 0x2e8b57 }); // Sea Green
+    let torus = new THREE.Mesh(torusGeometry, torusMaterial);
+    torus.position.set(0, 0.45, -0.5);
+    display.add(torus);
+
+    // Cylinder
+    let cylinderGeometry = new THREE.CylinderGeometry(0.2, 0.2, 0.6, 32);
+    let cylinderMaterial = new THREE.MeshLambertMaterial({ color: 0xff6347 }); // Tomato
+    let cylinder = new THREE.Mesh(cylinderGeometry, cylinderMaterial);
+    cylinder.position.set(-0.8, 0.3, -0.8);
+    display.add(cylinder);
+
+    // Icosahedron
+    let icosahedronGeometry = new THREE.IcosahedronGeometry(0.3, 0);
+    let icosahedronMaterial = new THREE.MeshStandardMaterial({ color: 0x4682b4 }); // Steel Blue
+    let icosahedron = new THREE.Mesh(icosahedronGeometry, icosahedronMaterial);
+    icosahedron.position.set(0.8, 0.3, 0.8);
+    display.add(icosahedron);
+
+    // Plaque 
+    let plaqueGeometry = new THREE.PlaneGeometry(2, 1);
+    let plaqueMaterial = new THREE.MeshLambertMaterial({ 
+        map: textures.get("ambrosia.jpg"),
+        side: THREE.DoubleSide 
+    });
+    let plaque = new THREE.Mesh(plaqueGeometry, plaqueMaterial);
+    plaque.position.set(0, 0.3, -1.3); // Adjust position to the back
+    plaque.rotation.y = Math.PI; 
+    display.add(plaque);
+
+    // Lamp
+    // Lamp base
+    let lampBaseGeometry = new THREE.CylinderGeometry(0.15, 0.15, 0.05, 32);
+    let lampBaseMaterial = new THREE.MeshLambertMaterial({ color: 0x808080 });
+    let lampBase = new THREE.Mesh(lampBaseGeometry, lampBaseMaterial);
+    lampBase.position.set(0, 0.05, 0);
+    display.add(lampBase);
+
+    // Lamp stem
+    let lampStemGeometry = new THREE.CylinderGeometry(0.03, 0.03, 0.4, 32);
+    let lampStemMaterial = new THREE.MeshLambertMaterial({ color: 0x808080 });
+    let lampStem = new THREE.Mesh(lampStemGeometry, lampStemMaterial);
+    lampStem.position.set(0, 0.25, 0);
+    display.add(lampStem);
+
+    // Lampshade
+    let lampShadeGeometry = new THREE.ConeGeometry(0.2, 0.3, 32);
+    let lampShadeMaterial = new THREE.MeshLambertMaterial({ color: 0xffd700 });
+    let lampShade = new THREE.Mesh(lampShadeGeometry, lampShadeMaterial);
+    lampShade.position.set(0, 0.45, 0);
+    display.add(lampShade);
+
+    // Adding Point Light to simulate the lamp light
+    let lampLight = new THREE.PointLight(0xffd700, 10, 2); 
+    lampLight.position.set(0, 0.55, 0); // Position the light slightly above the lampshade
+    display.add(lampLight);
+
+
+    return display;
+}
+
+
+function surfaceFunction(u, v, vector) {
+    let x = 20 * (u - 0.5);
+    let y = 10 * (v - 0.5);
+    let z = 2 * (Math.sin(x / 2) * Math.cos(y));
+
+    vector.set(x, y, z);
+}
+
+function createPedestal(x, y, z) {
+    let pedestalGeometry = new THREE.CylinderGeometry(0.5, 0.5, 2, 32);
+    let pedestalMaterial = new THREE.MeshLambertMaterial({ 
+        map: textures.get("maelstrm.jpg")
+    });
+    let pedestal = new THREE.Mesh(pedestalGeometry, pedestalMaterial);
+    pedestal.position.set(x, y, z);
+    return pedestal;
+}
+
+function trefoilKnotParametric(u, v, target) {
+    u = u * Math.PI * 2; 
+    v = v * Math.PI * 2; 
+
+    let r = 2 + Math.sin(3 * u);
+    let x = r * Math.cos(2 * u) + Math.cos(4 * u) - Math.sin(u / 12) * 4;
+    let y = r * Math.sin(2 * u) + Math.sin(4 * u) - Math.cos(u / 12) * 4;
+    let z = Math.sin(3 * u);
+
+    target.set(x, y, z);
+}
+
+
+
+/*  Render the scene.  This is called for each frame of the animation.
+ */
+function render() {
+    renderer.render(scene, camera);
+}
+
+/**
+ *  This init() function is called when by the onload event when the document has loaded.
+ */
+ function init() {
+	try {
+	    canvas = document.getElementById("glcanvas");
+		renderer = new THREE.WebGLRenderer( {
+		    canvas: canvas,
+		    antialias: true
+		} );
+	}
+	catch (e) {
+		document.getElementById("canvas-holder").innerHTML =
+		         "<h3><b>Sorry, WebGL is required but is not available.</b><h3>";
+		return;
+	}
+    // load textures
+    textures = new Map();
+    let loader = new THREE.TextureLoader();
+    for (let i in textureURLs) {
+        let texture = loader.load(textureURLs[i], render);
+        texture.colorSpace = THREE.SRGBColorSpace; // required for proper color
+        // The color looks washed out without this.
+        // three.js documentation says "PNG or JPEG Textures containing color information
+        // (like .map or .emissiveMap) use the closed domain sRGB color space,
+        // and must be annotated with texture.colorSpace = SRGBColorSpace."
+        texture.wrapS = THREE.RepeatWrapping;
+        texture.wrapT = THREE.RepeatWrapping;
+
+        textures.set(textureURLs[i].split("/").pop(), texture);
+    }
+	createWorld();
+
+            // setup trackball controls
+            let controls = new OrbitControls(camera, canvas);
+            controls.enablePan = false;
+            controls.enableZoom = false;
+            controls.addEventListener("change", render);
+
+	render();
+}
+
+window.onload = init;  // Arrange for the init() function to be called after page has beenloaded.
+
+</script>
+</head>
+<body>
+
+
+<div id="canvas-holder">
+<canvas id="glcanvas" width="600" height="600"></canvas>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,596 @@
+<html>
+
+<head>
+    <title>Environment Mapping</title>
+
+    <script type="x-shader/x-vertex" id="vshader">
+     attribute vec3 a_coords;
+     attribute vec3 a_normal;
+
+     uniform mat4 u_modelview;
+     uniform mat4 u_projection;
+
+     varying vec3 v_normal;
+     varying vec3 v_eyeCoords;
+
+     void main() {
+        vec4 coords = vec4(a_coords,1.0);
+        vec4 eyeCoords = u_modelview * coords;
+        gl_Position = u_projection * eyeCoords;
+
+        v_normal = normalize(a_normal);
+        v_eyeCoords = eyeCoords.xyz/eyeCoords.w;  // to accommodate perspective
+     }
+
+    </script>
+
+    <script type="x-shader/x-fragment" id="fshader">
+     precision mediump float;
+
+     struct LightProperties {
+		bool enabled;
+		vec4 position;
+		vec3 color; 
+		vec3 ambient; 
+     };
+
+     struct MaterialProperties {
+		vec3 diffuseColor;
+		vec3 specularColor;
+		float specularExponent;
+     };
+
+     uniform LightProperties u_light;
+     uniform MaterialProperties u_material;
+
+     uniform mat3 u_normalMatrix;
+ 
+     varying vec3 v_normal;
+     varying vec3 v_eyeCoords;
+ 
+     vec3 lightingEquation( LightProperties light,       
+                            MaterialProperties material,
+                            vec3 eyeCoords, // Eye coordinates for the point.
+                            vec3 N, // Normal vector to the surface.
+                            vec3 V  // Direction to viewer.
+                          ) {
+
+        vec3 diffuse = material.diffuseColor;
+
+		vec3 reflection = vec3(0);
+		reflection += light.ambient*diffuse;
+	
+		vec3 L, R; // Light direction and reflected light direction.
+		if ( light.position.w == 0.0 ) { // directional light
+            L = normalize( light.position.xyz );
+		} else { // point light
+            L = normalize( light.position.xyz/light.position.w - eyeCoords );
+		}
+		if (dot(L,N) <= 0.0) { // light does not illuminate the surface
+	        return reflection;
+		}
+
+		reflection += dot(L,N) * light.color * diffuse;
+	
+		R = -reflect(L,N);
+		if (dot(R,V) > 0.0) { // ray is reflected toward the the viewer
+     	    float factor = pow(dot(R,V),material.specularExponent);
+            reflection += factor * material.specularColor * light.color;
+		}
+
+		return reflection;
+	 }
+
+     void main() {
+   	    vec3 normal = normalize( v_normal );  // OC normal
+		normal = normalize( u_normalMatrix*normal );  // EC normal
+
+   	    vec3 viewDirection = normalize( -v_eyeCoords);  // (Assumes a perspective projection.)
+
+		vec3 color = vec3(0.0);  // Start with black
+		if (u_light.enabled) { // Light can only contribute color if enabled.
+		    color += lightingEquation( u_light, u_material, v_eyeCoords, 
+                                       normal, viewDirection );
+		}
+	
+   	    gl_FragColor = vec4(color,1);
+     }
+    </script>
+
+    <script type="x-shader/x-vertex" id="vshader_skybox">
+        uniform mat4 projection;
+        uniform mat4 modelview;
+        attribute vec3 a_coords;
+        varying vec3 v_objCoords;
+        void main() {
+            vec4 eyeCoords = modelview * vec4(a_coords,1.0);
+            gl_Position = projection * eyeCoords;
+            v_objCoords = a_coords;
+        }
+    </script>
+    
+
+    <script type="x-shader/x-fragment" id="fshader_skybox">
+        precision mediump float;
+        varying vec3 v_objCoords;
+        uniform samplerCube skybox;
+        void main() {
+            gl_FragColor = textureCube(skybox, v_objCoords);
+        }
+    </script>
+    
+
+    <script type="x-shader/x-vertex" id="vshader_env">
+        uniform mat4 projection;
+        uniform mat4 modelview;
+        attribute vec3 a_coords;
+        attribute vec3 a_normal;
+        varying vec3 v_eyeCoords;
+        varying vec3 v_normal;
+        void main() {
+            vec4 eyeCoords = modelview * vec4(a_coords,1.0);
+            gl_Position = projection * eyeCoords;
+            v_eyeCoords = eyeCoords.xyz;
+            v_normal = normalize(a_normal);
+        }
+    </script>
+    
+
+    <script type="x-shader/x-fragment" id="fshader_env">
+        precision mediump float;
+        varying vec3 v_normal;
+        varying vec3 v_eyeCoords;
+        uniform samplerCube skybox;
+        uniform mat3 normalMatrix;
+        uniform mat3 inverseViewTransform;
+        void main() {
+            vec3 N = normalize(normalMatrix * v_normal);
+            vec3 V = -v_eyeCoords;
+            vec3 R = -reflect(V,N);
+            vec3 T = inverseViewTransform * R; // Transform by inverse of the view transform that was applied to the skybox
+            gl_FragColor = textureCube(skybox, T);
+        }
+    </script>
+    
+
+    <script src="../webgl/gl-matrix-min.js"></script>
+    <script src="../webgl/webgl-utils.js"></script>
+    <script src="../webgl/webgl-maputils.js"></script>
+    <script src="../webgl/basic-object-models-IFS.js"></script>
+    <script src="../webgl/trackball-rotator.js"></script>
+ 
+
+    <script>
+        let canvas;    // DOM object corresponding to the canvas
+        let gl;        // webgl graphics context for drawing on the canvas
+
+        // shader programs and data
+        // to keep things organized, the elements for each shader program are
+        //  in an object
+        let dataLIT;    // for non-reflective objects (uses lighting)
+        // TODO: shader program and data for the skybox
+        // TODO [*]: shader program and data for the environment mapping shader 
+        // (reflective objects)
+
+        let projection = mat4.create();    // projection matrix
+        let modelview = mat4.create();     // modelview matrix
+        // TODO [*]: inverse of the viewing transform
+
+        let stack = [];   // modelview stack
+
+        // TODO: static cubemap texture for the skybox
+        // TODO [**]: dynamic cubemap texture for the reflective object, and a 
+        //  framebuffer for rendering the dynamic cubemap
+
+        let rotator;  // for mouse-driven rotation
+
+
+        // draw one frame of the animation
+        function draw() {
+
+            // create the dynamic cubemap texture
+            createDynamicCubemap();
+
+            // draw scene
+
+            // TODO [**]: draw the screen instead of a separate framebuffer,
+            //  filling the canvas
+
+            // set up viewing and projection
+            mat4.perspective(projection, Math.PI / 4, 1, 1, 150);
+            modelview = rotator.getViewMatrix();
+
+            // draw the skybox and non-reflective objects
+            renderScene();
+
+            // draw the reflective objects, using the environment map
+            drawReflectiveObjs();
+        }
+
+        // draw the skybox and non-reflective objects
+        function renderScene() {
+            // set color for clear (black) and clear canvas, depth buffer
+            gl.clearColor(0, 0, 0, 1);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+            // TODO [*]: get the inverse of the rotation that will be applied 
+            //  to the skybox (needed in the environment map shader to account
+            //  for the rotation of the skybox)
+
+            // draw the skybox
+            drawSkybox();
+
+            // draw normally-lit objects
+            drawLitObjs();
+        }
+
+        // draw the skybox
+        function drawSkybox() {
+    gl.useProgram(dataSB.prog);
+
+    let model = cube(100);  // Assuming there's a cube function available that returns the cube data
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, dataSB.a_coords_buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(model.vertexPositions), gl.STATIC_DRAW);
+    gl.vertexAttribPointer(dataSB.a_coords_loc, 3, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(dataSB.a_coords_loc);
+
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, dataSB.indexBuffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(model.indices), gl.STATIC_DRAW);
+
+    gl.uniformMatrix4fv(dataSB.u_modelview, false, modelview);
+    gl.uniformMatrix4fv(dataSB.u_projection, false, projection);
+
+    // Bind the skybox texture
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_CUBE_MAP, skyboxCubemap);
+    gl.uniform1i(dataSB.u_skybox, 0);
+
+    gl.drawElements(gl.TRIANGLES, model.indices.length, gl.UNSIGNED_SHORT, 0);
+
+    gl.disableVertexAttribArray(dataSB.a_coords_loc);
+}
+
+
+        // draw the non-reflective objects
+        function drawLitObjs() {
+
+            // set the shader program (with the lighting model)
+            gl.useProgram(dataLIT.prog);
+
+            // set the shader modelview and projection parameters
+            gl.uniformMatrix4fv(dataLIT.u_modelview_loc_skybox, false,
+                modelview);
+            gl.uniformMatrix4fv(dataLIT.u_projection_loc_skybox, false,
+                projection);
+
+            // enable the relevant vertex attribute arrays
+            gl.enableVertexAttribArray(dataLIT.a_coords_loc);
+            gl.enableVertexAttribArray(dataLIT.a_normal_loc);
+
+            // configure a light
+            setLight(dataLIT, [0, 0, 10, 1], [1, 1, 1], [.2, .2, .2]);
+
+            // draw the shapes
+
+            stack.push(mat4.clone(modelview));
+            mat4.translate(modelview, modelview, [-10, 0, 0]);
+            mat4.rotateY(modelview, modelview, Math.PI / 2);
+            setMaterial(dataLIT, [0.8, 0.1, 0.8], [.8, .8, .8], 32);
+            drawObject(dataLIT, uvTorus(3, 2, 64, 32));
+            modelview = stack.pop();
+
+            stack.push(mat4.clone(modelview));
+            mat4.translate(modelview, modelview, [0, -10, 0]);
+            setMaterial(dataLIT, [0.8, 0.2, 0.2], [.8, .8, .8], 32);
+            drawObject(dataLIT, cube(3));
+            modelview = stack.pop();
+
+            stack.push(mat4.clone(modelview));
+            mat4.translate(modelview, modelview, [10, 0, 0]);
+            setMaterial(dataLIT, [0.2, 0.8, 0.2], [.8, .8, .8], 32);
+            mat4.rotateX(modelview, modelview, Math.PI / 2);
+            drawObject(dataLIT, uvCylinder(1, 6, 64));
+            modelview = stack.pop();
+
+            // disable the vertex attribute arrays enabled
+            gl.disableVertexAttribArray(dataLIT.a_coords_loc);
+            gl.disableVertexAttribArray(dataLIT.a_normal_loc);
+        }
+
+        // draw the reflective objects using the dynamic cubemap
+        // draw the reflective objects using the dynamic cubemap
+function drawReflectiveObjs() {
+    gl.useProgram(dataENV.prog);
+
+    // Bind dynamic cubemap to texture unit 1
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_CUBE_MAP, dynamicCubemap);
+    gl.uniform1i(dataENV.u_skybox, 1);
+
+    gl.enableVertexAttribArray(dataENV.a_coords_loc);
+    gl.enableVertexAttribArray(dataENV.a_normal_loc);
+
+    // TODO [*]: draw a reflective sphere - uvSphere(7, 32, 32) - using
+    //   drawObjectEnv
+    let model = uvSphere(7, 32, 32); // Create sphere model
+    drawObjectEnv(dataENV, model); // Draw using environment mapping
+
+    gl.disableVertexAttribArray(dataENV.a_coords_loc);
+    gl.disableVertexAttribArray(dataENV.a_normal_loc);
+}
+
+
+        // set the material-related shader parameters 
+        function setMaterial(shader_data, diffuse, specular, shininess) {
+            gl.uniform3fv(shader_data.u_material_loc.diffuseColor, diffuse);
+            gl.uniform3fv(shader_data.u_material_loc.specularColor, specular);
+            gl.uniform1f(shader_data.u_material_loc.specularExponent,
+                shininess);
+        }
+
+        // set the light-related shader parameters 
+        function setLight(shader_data, position, color, ambient) {
+            // apply the current modelview and projection to the lights
+            let wcpos = vec4.create();
+            vec4.transformMat4(wcpos, position, modelview);
+            vec4.transformMat4(wcpos, wcpos, projection);
+
+            // set shader parameters
+            gl.uniform1i(shader_data.u_light_loc.enabled, 1);
+            gl.uniform4fv(shader_data.u_light_loc.position, wcpos);
+            gl.uniform3fv(shader_data.u_light_loc.color, color);
+            gl.uniform3fv(shader_data.u_light_loc.ambient, ambient);
+        }
+
+        // draw a non-reflective object
+        //  - shader_data is the program, parameter location, buffers for the
+        //     shader program
+        //  - model is the shape to draw
+        function drawObject(shader_data, model) {
+
+            // set the shader parameters for the geometry (indexed face set 
+            //  representation)
+            let index_buffer = gl.createBuffer();
+            let count = model.indices.length;
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, shader_data.a_coords_buffer);
+            gl.bufferData(gl.ARRAY_BUFFER, model.vertexPositions,
+                gl.STATIC_DRAW);
+            gl.vertexAttribPointer(shader_data.a_coords_loc, 3, gl.FLOAT,
+                false, 0, 0);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, shader_data.a_normal_buffer);
+            gl.bufferData(gl.ARRAY_BUFFER, model.vertexNormals, gl.STATIC_DRAW);
+            gl.vertexAttribPointer(shader_data.a_normal_loc, 3, gl.FLOAT,
+                false, 0, 0);
+
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, index_buffer);
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, model.indices,
+                gl.STATIC_DRAW);
+
+            // get matrix for transforming normals
+            let normalMatrix = mat3.create();
+            mat3.normalFromMat4(normalMatrix, modelview);
+
+            // set the transform-related shader parameters
+            gl.uniformMatrix4fv(shader_data.u_modelview_loc, false, modelview);
+            gl.uniformMatrix4fv(shader_data.u_projection_loc, false,
+                projection);
+            gl.uniformMatrix3fv(shader_data.u_normalMatrix_loc, false,
+                normalMatrix);
+
+            // draw the geometry
+            gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_SHORT, 0);
+        }
+
+       // draw a reflective object
+//  - shader_data is the program, parameter location, buffers for the
+//     shader program
+//  - model is the shape to draw
+function drawObjectEnv(shader_data, model) {
+    // TODO [*]: set the shader parameters for the geometry (indexed face set representation)
+    let index_buffer = gl.createBuffer();
+    let count = model.indices.length;
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, shader_data.a_coords_buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, model.vertexPositions, gl.STATIC_DRAW);
+    gl.vertexAttribPointer(shader_data.a_coords_loc, 3, gl.FLOAT, false, 0, 0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, shader_data.a_normal_buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, model.vertexNormals, gl.STATIC_DRAW);
+    gl.vertexAttribPointer(shader_data.a_normal_loc, 3, gl.FLOAT, false, 0, 0);
+
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, index_buffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, model.indices, gl.STATIC_DRAW);
+
+    // TODO [*]: get matrix for transforming normals
+    let normalMatrix = mat3.create();
+    mat3.normalFromMat4(normalMatrix, modelview);
+
+    // TODO [*]: set the transform-related shader parameters (modelview, projection, etc)
+    gl.uniformMatrix4fv(shader_data.u_modelview, false, modelview);
+    gl.uniformMatrix4fv(shader_data.u_projection, false, projection);
+    gl.uniformMatrix3fv(shader_data.u_normalMatrix, false, normalMatrix);
+
+    // TODO [*]: draw the geometry
+    gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_SHORT, 0);
+}
+
+
+        function createDynamicCubemap() {
+    // Create texture for dynamic cubemap
+    dynamicCubemap = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_CUBE_MAP, dynamicCubemap);
+    for (let i = 0; i < 6; i++) {
+        gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, gl.RGBA, 512, 512, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    }
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    // Create framebuffer
+    let framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+
+    // Create renderbuffer for depth buffer
+    let depthBuffer = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, depthBuffer);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, 512, 512);
+
+    // Attach depth buffer to framebuffer
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthBuffer);
+
+    
+}
+
+        // initialize the webgl graphics context
+        function initGL() {
+            // set up the shader programs
+            initShader();
+            initShaderSkybox();
+            initShaderEnv();
+
+            // set up rotator
+            rotator = new TrackballRotator(canvas, draw, 30);
+
+            // enable depth test
+            gl.enable(gl.DEPTH_TEST);
+            // Load the static cubemap texture for the skybox
+            skyboxCubemap = gl.createTexture();
+            loadTextureCube(skyboxCubemap, [
+                "../cubemap-textures/Yokohama-at-night/posx.jpg", "../cubemap-textures/Yokohama-at-night/negx.jpg",
+                "../cubemap-textures/Yokohama-at-night/posy.jpg", "../cubemap-textures/Yokohama-at-night/negy.jpg",
+                "../cubemap-textures/Yokohama-at-night/posz.jpg", "../cubemap-textures/Yokohama-at-night/negz.jpg"
+            ]);
+
+    // Create the dynamic cubemap texture and framebuffer
+    createDynamicCubemap();
+    
+    // Enable depth testing
+    gl.enable(gl.DEPTH_TEST);
+        }
+
+        // intialize the shader program, parameter locations, and buffers for the regular (non-reflective objects) shader
+        function initShader() {
+            dataLIT = {};
+
+            // set up shader program
+            dataLIT.prog = createProgram(gl, getTextContent("vshader"),
+                getTextContent("fshader"));
+
+            // set up locations and buffers for shader parameters
+            dataLIT.a_coords_loc = gl.getAttribLocation(dataLIT.prog,
+                "a_coords");
+            dataLIT.a_normal_loc = gl.getAttribLocation(dataLIT.prog,
+                "a_normal");
+
+            dataLIT.u_modelview_loc = gl.getUniformLocation(dataLIT.prog,
+                "u_modelview");
+            dataLIT.u_projection_loc = gl.getUniformLocation(dataLIT.prog,
+                "u_projection");
+            dataLIT.u_normalMatrix_loc = gl.getUniformLocation(dataLIT.prog,
+                "u_normalMatrix");
+
+            dataLIT.u_material_loc = {
+                diffuseColor: gl.getUniformLocation(dataLIT.prog,
+                    "u_material.diffuseColor"),
+                specularColor: gl.getUniformLocation(dataLIT.prog,
+                    "u_material.specularColor"),
+                specularExponent: gl.getUniformLocation(dataLIT.prog,
+                    "u_material.specularExponent")
+            };
+            dataLIT.u_light_loc = {
+                enabled: gl.getUniformLocation(dataLIT.prog,
+                    "u_light.enabled"),
+                position: gl.getUniformLocation(dataLIT.prog,
+                    "u_light.position"),
+                color: gl.getUniformLocation(dataLIT.prog, "u_light.color"),
+                ambient: gl.getUniformLocation(dataLIT.prog,
+                    "u_light.ambient"),
+            };
+
+            dataLIT.a_coords_buffer = gl.createBuffer();
+            dataLIT.a_normal_buffer = gl.createBuffer();
+        }
+
+        // intialize the shader program, parameter locations, and buffers for
+        //  the skybox shader
+        function initShaderSkybox() {
+    dataSB = {};
+    dataSB.prog = createProgram(gl, getTextContent("vshader_skybox"), getTextContent("fshader_skybox"));
+    dataSB.a_coords_loc = gl.getAttribLocation(dataSB.prog, "a_coords");
+    dataSB.u_modelview = gl.getUniformLocation(dataSB.prog, "modelview");
+    dataSB.u_projection = gl.getUniformLocation(dataSB.prog, "projection");
+    dataSB.u_skybox = gl.getUniformLocation(dataSB.prog, "skybox");
+
+    dataSB.a_coords_buffer = gl.createBuffer();
+    dataSB.indexBuffer = gl.createBuffer();
+}
+
+
+        // intialize the shader program, parameter locations, and buffers for 
+        // the environment map (reflective objects) shader
+        function initShaderEnv() {
+    dataENV = {};
+    dataENV.prog = createProgram(gl, getTextContent("vshader_env"), getTextContent("fshader_env"));
+    dataENV.a_coords_loc = gl.getAttribLocation(dataENV.prog, "a_coords");
+    dataENV.a_normal_loc = gl.getAttribLocation(dataENV.prog, "a_normal");
+    dataENV.u_modelview = gl.getUniformLocation(dataENV.prog, "modelview");
+    dataENV.u_projection = gl.getUniformLocation(dataENV.prog, "projection");
+    dataENV.u_normalMatrix = gl.getUniformLocation(dataENV.prog, "normalMatrix");
+    dataENV.u_inverseViewTransform = gl.getUniformLocation(dataENV.prog, "inverseViewTransform");
+    dataENV.u_skybox = gl.getUniformLocation(dataENV.prog, "skybox");
+
+    dataENV.a_coords_buffer = gl.createBuffer();
+    dataENV.a_normal_buffer = gl.createBuffer();
+    dataENV.indexBuffer = gl.createBuffer();
+}
+
+
+        // initialize program
+        // (called after page has been loaded)
+        function init() {
+            try {
+                canvas = document.getElementById("webglcanvas");
+                let options = {  // no need for alpha channel
+                    alpha: false,
+                    depth: true
+                };
+                gl = canvas.getContext("webgl", options) ||
+                    canvas.getContext("experimental-webgl", options);
+                if (!gl) {
+                    throw "Browser does not support WebGL";
+                }
+            }
+            catch (e) {
+                document.getElementById("canvas-holder").innerHTML =
+                    "<p>Sorry, could not get a WebGL graphics context.</p>";
+                return;
+            }
+            try {
+                initGL();  // initialize the WebGL graphics context
+            }
+            catch (e) {
+                document.getElementById("canvas-holder").innerHTML =
+                    "<p>Sorry, could not initialize the WebGL graphics context:" + e + "</p>";
+                return;
+            }
+            draw();    // draw the image
+        }
+    </script>
+</head>
+
+<body onload="init()">
+    <noscript>
+        <p><b>Sorry, but this page requires JavaScript.</b></p>
+    </noscript>
+
+    <div id="canvas-holder">
+        <canvas id="webglcanvas" width="500" height="500"></canvas>
+    </div>
+
+</body>
+
+</html>

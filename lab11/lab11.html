@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<head>
+<meta charset="UTF-8">
+<title>Lab10</title>
+<style>
+</style>
+<script type="importmap">
+  {
+     "imports": {
+        "three": "../threejs/three.module.min.js",
+        "addons/": "../threejs/"
+     }
+  }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "addons/controls/OrbitControls.js";
+import { ParametricGeometry } from "addons/geometries/ParametricGeometry.js";
+
+
+"use strict";
+
+let scene, camera, renderer;  // Three.js rendering basics.
+
+let canvas;  // The canvas on which the image is rendered.
+
+
+let currentModel;   
+ 
+let controls;  // trackball controls
+
+let textures;
+let textureURLs = [
+   "../textures/maelstrm.jpg",
+   "../textures/ambrosia.jpg"
+];
+
+const skyboxImagePaths = [
+    'cubemap-textures/Yokohama-at-night/posx.jpg', 
+    'cubemap-textures/Yokohama-at-night/negx.jpg', 
+    'cubemap-textures/Yokohama-at-night/posy.jpg', 
+    'cubemap-textures/Yokohama-at-night/negy.jpg', 
+    'cubemap-textures/Yokohama-at-night/posz.jpg', 
+    'cubemap-textures/Yokohama-at-night/negz.jpg'  
+];
+
+
+
+
+/*  Create the scene graph.  This function is called once, as soon as the page loads.
+ *  The renderer has already been created before this function is called.
+ */
+ function createWorld() {
+    renderer.setClearColor(0x444444);  // Dark gray background
+
+    scene = new THREE.Scene();
+    
+    camera = new THREE.PerspectiveCamera(75, canvas.width/canvas.height, 1, 10000);
+    camera.position.z = 15;
+
+    addLights();  // Add various lights to the scene
+    
+    createSkybox();
+
+    const stage = createStage();
+    const statue = createStatue();
+    const lamp1 = createLamp();
+    const lamp2 = createLamp();
+
+    lamp1.position.set(3, 0, 0);
+    lamp2.position.set(-3,0,0);
+    statue.position.set(0,0,0);
+
+    currentModel = new THREE.Object3D();
+
+    currentModel.add(stage);
+    currentModel.add(statue);
+    currentModel.add(lamp1);
+    currentModel.add(lamp2);
+    currentModel.rotation.set(0.1, 0, 0); // Slightly tilt the model
+    scene.add(currentModel);
+}
+
+
+function createStatue() {
+    
+// Reflective material with a color
+const reflectiveMaterialColor = new THREE.MeshPhongMaterial({
+    color: 0xBF9000, // Gold
+    envMap: scene.background, 
+    reflectivity: 0.6
+});
+
+// Reflective material with a texture
+const textureLoader = new THREE.TextureLoader();
+const reflectiveMaterialTexture = new THREE.MeshPhongMaterial({
+    map: textureLoader.load('../textures/maelstrm.jpg'), 
+    envMap: scene.background,
+    reflectivity: 0.8
+});
+// Refractive material with a color
+const refractiveMaterialColor = new THREE.MeshPhysicalMaterial({
+    color: 0x0000ff, // Blue 
+    transmission: 0.9, 
+    refractionRatio: 0.98, 
+    opacity: 0.7,
+    transparent: true,
+    envMap: scene.background
+});
+
+// Refractive material with a texture
+const refractiveMaterialTexture = new THREE.MeshPhysicalMaterial({
+    map: textureLoader.load('../textures/glassblk.jpg'),
+    color: 0xB0A0DE, // Purplish 
+    transmission: 0.9,
+    refractionRatio: 0.98,
+    opacity: 0.9,
+    transparent: true,
+    envMap: scene.background
+});
+
+    const head = createHead();
+    const torso = createTorso();
+    // Torso is scaled and translated in createTorso function
+
+    // Define leg dimensions and material
+    const upperLegLength = 1; 
+    const lowerLegLength = 1; 
+    const legWidth = 0.15; 
+    const leftLegMaterial = refractiveMaterialTexture;
+    const rightLegMaterial = refractiveMaterialColor; 
+    const outwardRotationZ = 20 * Math.PI / 180; // 20 degrees in radians
+    const xPosition = .125; // Prevents feet from overlapping
+
+    // Create legs
+    const leftLeg = createLeg(leftLegMaterial, upperLegLength, lowerLegLength, legWidth, outwardRotationZ, -xPosition);
+    const rightLeg = createLeg(rightLegMaterial, upperLegLength, lowerLegLength, legWidth, -outwardRotationZ, xPosition); // Negative for the right leg
+
+    // Position the legs for the sitting pose
+    leftLeg.position.set(-0.5, -.6, 1.2); 
+    rightLeg.position.set(0.5, -.6, 1.2); 
+
+    // Arms
+    const leftArmMaterial = reflectiveMaterialColor;
+    const rightArmMaterial = reflectiveMaterialTexture; 
+    const upperArmLength = 1.1; 
+    const lowerArmLength = .9; 
+    const armWidth = 0.2; 
+    const leftArm = createArm(leftArmMaterial, upperArmLength, lowerArmLength, armWidth);
+    const rightArm = createArm(rightArmMaterial, upperArmLength, lowerArmLength, armWidth);
+
+    // Position the arms appropriately for the statue
+    leftArm.position.set(-1.5, 3, 0); 
+    rightArm.position.set(1.5, 3, 0); 
+
+    // Newspaper
+    const newspaper = createNewspaper();
+
+    // Statue object
+    const statue = new THREE.Object3D();
+
+    // Add all parts to statue object
+    statue.add(head);
+    statue.add(torso);
+    statue.add(leftLeg);
+    statue.add(rightLeg);
+    statue.add(leftArm);
+    statue.add(rightArm);
+    statue.add(newspaper);
+
+    statue.position.set(0, 0, 0);
+    statue.rotation.set(0, 0.1, 0);
+
+    return statue;
+}
+/*
+    Lamp
+*/
+function createLamp() {
+    // Lamp base
+    const lamp =  new THREE.Group();
+    let lampBaseGeometry = new THREE.CylinderGeometry(0.15, 0.15, 0.05, 32);
+    let lampBaseMaterial = new THREE.MeshLambertMaterial({ color: 0x808080 });
+    let lampBase = new THREE.Mesh(lampBaseGeometry, lampBaseMaterial);
+    lampBase.position.set(0, 0.05, 0);
+    lamp.add(lampBase);
+
+    // Lamp stem
+    let lampStemGeometry = new THREE.CylinderGeometry(0.03, 0.03, 0.4, 32);
+    let lampStemMaterial = new THREE.MeshLambertMaterial({ color: 0x808080 });
+    let lampStem = new THREE.Mesh(lampStemGeometry, lampStemMaterial);
+    lampStem.position.set(0, 0.25, 0);
+    lamp.add(lampStem);
+
+    // Lampshade
+    let lampShadeGeometry = new THREE.ConeGeometry(0.2, 0.3, 32);
+    let lampShadeMaterial = new THREE.MeshLambertMaterial({ color: 0xffd700 });
+    let lampShade = new THREE.Mesh(lampShadeGeometry, lampShadeMaterial);
+    lampShade.position.set(0, 0.45, 0);
+    lamp.add(lampShade);
+
+    // Adding Point Light to simulate the lamp light
+    let lampLight = new THREE.PointLight(0xffd700, 10, 5); 
+    lampLight.position.set(0, 0.55, 0); // Position the light slightly above the lampshade
+    lamp.add(lampLight);
+    lamp.scale.set(5,5,5);
+    return lamp;
+}
+/*
+    Newspaper
+*/
+function createNewspaper() {
+    // Load the paper texture
+    const textureLoader = new THREE.TextureLoader();
+    const paperTexture = textureLoader.load('../textures/paprxrgh.jpg'); 
+
+    const newspaperGeometry = new THREE.BoxGeometry(1, 0.05, 1.5); 
+
+    // Base color to blend with the texture
+    const offsetColor = new THREE.Color(0xe5cbba ); 
+
+    // Newspaper Material
+    const newspaperMaterial = new THREE.MeshStandardMaterial({
+        map: paperTexture,
+        color: offsetColor,
+        envMap: scene.background
+    });
+
+    // Newspaper geometry
+    const newspaper = new THREE.Mesh(newspaperGeometry, newspaperMaterial);
+    newspaper.position.set(0, 3, 4.97); // Position the newspaper relative to the statue's hands
+    newspaper.rotation.set(-Math.PI / 4, 0, 0); 
+    newspaper.castShadow = true;
+    newspaper.receiveShadow = true;
+
+    newspaper.scale.set(3,1,1);
+
+    return newspaper;
+}
+/*
+    Shoulder Joint
+*/
+function createShoulderJoint(material, size) {
+    // Shoulder joint
+    const jointGeometry = new THREE.SphereGeometry(size, 32, 32);
+    const joint = new THREE.Mesh(jointGeometry, material);
+    joint.castShadow = true;
+    joint.receiveShadow = true;
+    return joint;
+}
+/*
+    Upper Arm
+*/
+function createUpperArm(material, length, width) {
+    // Upper Arm
+    const geometry = new THREE.CylinderGeometry(width, width, length, 32);
+    const upperArm = new THREE.Mesh(geometry, material);
+    upperArm.rotation.x = -10; 
+    upperArm.position.set(0, (length / 2)-.15, 1);
+    upperArm.castShadow = true;
+    upperArm.receiveShadow = true;
+    return upperArm;
+}
+/*
+    Lower Arm
+*/
+function createLowerArm(material, length, width) {
+    // Lower Arm
+    const geometry = new THREE.CylinderGeometry(width, width, length, 32);
+    const lowerArm = new THREE.Mesh(geometry, material);
+    lowerArm.rotation.x = -Math.PI / 2; // Rotate to be perpendicular to the upper arm
+    // Position the lower arm so that its top aligns with the bottom of the upper arm
+    lowerArm.position.set(0, 0, length+.7); 
+    lowerArm.castShadow = true;
+    lowerArm.receiveShadow = true;
+
+    // Hand
+    const handGeometry = new THREE.SphereGeometry(.25, 32, 32);
+    const hand = new THREE.Mesh(handGeometry, material);
+    hand.position.set(0, 0, length+1.25); // Position the hand at the end of the arm
+    hand.castShadow = true;
+    hand.receiveShadow = true;
+
+    // Create arm part object
+    const arm = new THREE.Object3D();
+
+    // Add arm parts to arm object
+    arm.add(lowerArm);
+    arm.add(hand);
+
+    return arm;
+}
+/*
+    Arm
+*/
+function createArm(material, upperArmLength, lowerArmLength, armWidth) {
+    const upperArm = createUpperArm(material, upperArmLength, armWidth);
+    const lowerArm = createLowerArm(material, lowerArmLength, armWidth);
+
+    const shoulderJoint = createShoulderJoint(material, .3);
+    shoulderJoint.position.set(0, upperArmLength, .7); 
+
+    // Creat arm object
+    const arm = new THREE.Object3D();
+
+    // Add arm parts to arm object
+    arm.add(upperArm);
+    arm.add(lowerArm);
+    arm.add(shoulderJoint);
+
+    // Apply scaling
+    arm.scale.set(2, 2, 2);
+
+    return arm;
+}
+/*
+    Joint
+*/
+function createJoint(material, size) {
+    // Joint
+    const jointGeometry = new THREE.SphereGeometry(size, 32, 32);
+    const joint = new THREE.Mesh(jointGeometry, material);
+    joint.castShadow = true;
+    joint.receiveShadow = true;
+    return joint;
+}
+/*
+    Upper Leg
+*/
+function createUpperLeg(material, length, width) {
+    
+    // Leg part
+    const geometry = new THREE.CylinderGeometry(width, width, length, 32);
+    const upperLeg = new THREE.Mesh(geometry, material);
+    upperLeg.rotation.x = Math.PI / 2; // Rotate to lie flat
+    upperLeg.position.y = length / 2; // Position based on the length of the segment
+    upperLeg.castShadow = true;
+    upperLeg.receiveShadow = true;
+    return upperLeg;
+}
+/*
+    Lower Leg
+*/
+function createLowerLeg(material, length, width, xPosition) {
+    const lowerLeg = new THREE.Object3D();
+
+    // Leg part
+    const legGeometry = new THREE.CylinderGeometry(width, width, length, 32);
+    const leg = new THREE.Mesh(legGeometry, material);
+    leg.castShadow = true;
+    leg.receiveShadow = true;
+    lowerLeg.add(leg); // Add the leg part to the lowerLeg object
+
+    // Foot
+    const footGeometry = new THREE.SphereGeometry(0.15, 32, 32);
+    const foot = new THREE.Mesh(footGeometry, material);
+    foot.scale.z = 2; // Elongate the foot
+    foot.position.set(0, (length / 2 - 1.12), .1); // Position the foot at the end of the leg part
+    foot.castShadow = true;
+    foot.receiveShadow = true;
+    lowerLeg.add(foot); // Add the foot to the lowerLeg object
+    lowerLeg.position.set(xPosition,0,(length/2)-.15);
+    return lowerLeg;
+}
+/*
+    Leg
+*/
+function createLeg(material, upperLegLength, lowerLegLength, legWidth, outwardRotationZ, xPosition) {
+    // Create the upper leg
+    const upperLeg = createUpperLeg(material, upperLegLength, legWidth);
+
+    // Create the lower leg
+    const lowerLeg = createLowerLeg(material, lowerLegLength, legWidth, xPosition);
+
+    const lowerLegRotationZ = -(outwardRotationZ * 0.7); 
+    const lowerLegRotationX = (.3);
+
+    // Create knee joint and position it at the end of the upper leg
+    const kneeJoint = createJoint(material, legWidth + 0.01);
+    kneeJoint.position.set(0, 0.5, upperLegLength / 2);
+
+    // Create leg object
+    const leg = new THREE.Object3D();
+
+    // Add leg parts to leg object
+    leg.add(upperLeg);
+    leg.add(lowerLeg);
+    leg.add(kneeJoint);
+
+    // Apply the overall rotation to the entire leg
+    leg.scale.set(3, 3, 3);
+    leg.rotation.z = outwardRotationZ;
+
+    // Apply additional rotation to the lower leg
+    lowerLeg.rotation.z = lowerLegRotationZ;
+    lowerLeg.rotation.x = lowerLegRotationX;
+    return leg;
+}
+/*
+    Torso segment
+*/
+function createTorsoSegment(material, size, position, rotation) {
+    // Torso Segment
+    const segmentGeometry = new THREE.BoxGeometry(size.width, size.height, size.depth);
+    const segment = new THREE.Mesh(segmentGeometry, material);
+    segment.position.set(position.x, position.y, position.z);
+    segment.rotation.set(rotation.x, rotation.y, rotation.z);
+    segment.castShadow = true;
+    segment.receiveShadow = true;
+    return segment;
+}
+/*
+    Torso
+*/
+function createTorso() {
+    // Materials for each segment
+    const upperMaterial = new THREE.MeshStandardMaterial({ color: 0x335345 }); // Standard material for upper torso
+    const middleMaterial = new THREE.MeshPhysicalMaterial({
+        // Reflective material for middle torso
+        color: 0xdddddd, // Off-White
+        envMap: scene.background,
+        reflectivity: 0.5,
+        metalness: 0.6
+    });
+    const lowerMaterial = new THREE.MeshPhysicalMaterial({
+        // Refractive material for lower torso
+        color: 0x0077ff, // Light-Blue
+        transmission: 0.5,
+        opacity: 0.5,
+        transparent: true,
+        envMap: scene.background
+    });
+
+    // Create each torso segment
+    const upperSegment = createTorsoSegment(upperMaterial, { width: 0.7, height: 0.8, depth: 0.2 }, { x: 0, y: 1.6, z: 0 }, { x: 0, y: 0, z: 0 });
+    const middleSegment = createTorsoSegment(middleMaterial, { width: 0.8, height: 0.6, depth: 0.2 }, { x: 0, y: 1.0, z: 0 }, { x: 0, y: 0, z: 0 });
+    const lowerSegment = createTorsoSegment(lowerMaterial, { width: 0.9, height: 0.4, depth: 0.2 }, { x: 0, y: 0.5, z: 0 }, { x: 0, y: 0, z: 0 });
+    upperSegment.translateZ(0.25);
+    upperSegment.translateY(-.1);
+    upperSegment.rotation.set(.7,0,0);
+    middleSegment.rotation.set(.1,0,0);
+    
+    // Add segments to torso object
+    const torso = new THREE.Object3D();
+    torso.add(upperSegment);
+    torso.add(middleSegment);
+    torso.add(lowerSegment);
+
+    // Apply scaling and translation 
+    torso.scale.set(3, 3, 3);
+    return torso;
+}
+/*
+    Head
+*/
+function createHead() {
+    // Material for the head with reflective properties
+    const headMaterial = new THREE.MeshPhongMaterial({
+        color: 0x5A5CBC3, 
+        specular: 0x050505,
+        shininess: 100,
+        reflectivity: 0.5,
+        envMap: scene.background
+    });
+
+    // Head
+    const headGeometry = new THREE.SphereGeometry(.9, 32, 32); 
+    const head = new THREE.Mesh(headGeometry, headMaterial);
+    head.position.set(0, 4, 0); // Position set to 4 units up on the y-axis
+    head.castShadow = true; // Ensure the head casts a shadow
+
+    // Neck
+    const neckGeometry = new THREE.CylinderGeometry(0.4, 0.3, 1, 32); // Top radius, bottom radius, height, radial segments
+    const neckMaterial = new THREE.MeshStandardMaterial({ color: 0xC7EDE5 }); 
+    const neck = new THREE.Mesh(neckGeometry, neckMaterial);
+    neck.position.set(0, 3, 0); // Position the neck at the base of the head
+    neck.castShadow = true; // The neck should also cast a shadow
+
+    // Create head object
+    const headObject = new THREE.Object3D();
+    
+    // Add head and neck to head object
+    headObject.add(head);
+    headObject.add(neck);
+    headObject.rotation.set(.75,0,0);
+    headObject.translateY(2.4);
+    headObject.translateZ(-2.6);
+    return headObject;
+}
+/*
+    Stage
+*/
+function createStage() {
+    // Stage
+    const stageGeometry = new THREE.BoxGeometry(15,.7,2);
+    const stageMaterial = new THREE.MeshStandardMaterial({ color: 0xF0EAD6 }); // Eggshell
+    const stage = new THREE.Mesh(stageGeometry, stageMaterial);
+    stage.receiveShadow = true;
+    return stage;
+}
+/*
+    Skybox
+*/
+function createSkybox() {    
+    scene.background = new THREE.CubeTextureLoader() 
+        .setPath('../cubemap-textures/Yokohama-at-night/')
+        .load([
+				'posx.jpg',
+				'negx.jpg',
+				'posy.jpg',
+				'negy.jpg',
+				'posz.jpg',
+				'negz.jpg'
+             ]
+        );
+}
+/*
+    Lights
+*/
+function addLights() {
+           
+
+            // Point light
+            let pointLight = new THREE.PointLight(0xff0000, 1, 100);
+            pointLight.position.set(-10, -10, -10);
+            scene.add(pointLight);
+
+            // Directional light shining from the camera
+            let cameraLight = new THREE.DirectionalLight(0xffffff, 0.5);
+            cameraLight.position.copy(camera.position);
+            scene.add(cameraLight);
+        }
+
+
+
+/*  Render the scene.  This is called for each frame of the animation.
+ */
+function render() {
+    renderer.render(scene, camera);
+}
+
+/**
+ *  This init() function is called when by the onload event when the document has loaded.
+ */
+ function init() {
+	try {
+	    canvas = document.getElementById("glcanvas");
+		renderer = new THREE.WebGLRenderer({
+            canvas: canvas,
+            antialias: true,
+            alpha: true
+        });
+       
+	}
+	catch (e) {
+		document.getElementById("canvas-holder").innerHTML =
+		         "<h3><b>Sorry, WebGL is required but is not available.</b><h3>";
+		return;
+	}
+    // load textures
+    textures = new Map();
+    let loader = new THREE.TextureLoader();
+    for (let i in textureURLs) {
+        let texture = loader.load(textureURLs[i], render);
+        texture.colorSpace = THREE.SRGBColorSpace; // required for proper color
+        // The color looks washed out without this.
+        // three.js documentation says "PNG or JPEG Textures containing color information
+        // (like .map or .emissiveMap) use the closed domain sRGB color space,
+        // and must be annotated with texture.colorSpace = SRGBColorSpace."
+        texture.wrapS = THREE.RepeatWrapping;
+        texture.wrapT = THREE.RepeatWrapping;
+
+        textures.set(textureURLs[i].split("/").pop(), texture);
+    }
+	createWorld();
+
+            // setup trackball controls
+            let controls = new OrbitControls(camera, canvas);
+            controls.enablePan = true;
+            controls.enableZoom = true;
+            controls.addEventListener("change", render);
+            
+	render();
+}
+
+window.onload = init;  // Arrange for the init() function to be called after page has beenloaded.
+
+</script>
+</head>
+<body>
+
+
+<div id="canvas-holder">
+<canvas id="glcanvas" width="600" height="600"></canvas>
+</div>
+
+</body>
+</html>

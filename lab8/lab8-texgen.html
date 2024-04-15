@@ -1,0 +1,360 @@
+<html>
+
+<head>
+    <title>Lighting and Shading</title>
+
+    <script type="x-shader/x-vertex" id="vshader">
+    struct Transforms {
+        mat4 modelview;
+        mat4 projection;
+        mat3 normalMatrix;
+    };
+
+    attribute vec3 a_coords;  // vertex coordinates (in object coordinates)
+    attribute vec3 a_normal;  // surface normal (in object coordinates)
+    attribute vec2 a_texcoords;  // texture coordinates
+
+    uniform Transforms u_transform;
+
+    varying vec3 v_coords;   // EC
+    varying vec3 v_normal;   // EC
+    varying vec3 f_coords_object; 
+
+    void main() {
+        vec4 coords = vec4(a_coords,1.0);
+	    vec4 eyecoords = u_transform.modelview * coords;   // in eye coords
+        gl_Position = u_transform.projection * eyecoords;  // in clip coords
+
+        v_coords = eyecoords.xyz/eyecoords.w;
+        v_normal = normalize(u_transform.normalMatrix*a_normal);
+        f_coords_object = a_coords;
+    }
+    </script>
+
+    <script type="x-shader/x-fragment" id="fshader">
+    precision mediump float;
+
+    struct LightProperties {
+    	bool enabled;
+    	vec4 position;
+    	vec3 color; 
+    };
+
+    struct MaterialProperties {
+	    vec3 diffuseColor;
+	    vec3 specularColor;
+	    float specularExponent;   // shininess
+    };
+
+    uniform LightProperties u_light;
+    uniform MaterialProperties u_material;
+
+    uniform sampler2D u_texture;
+    uniform int u_combineMode;
+    uniform float u_sphereRadius;
+
+    varying vec3 v_coords;   // EC
+    varying vec3 v_normal;   // EC
+    varying vec3 f_coords_object;  // Received from vertex shader
+
+    vec3 lightingEquation( LightProperties light,       
+                           MaterialProperties material, 
+                           vec3 point, // surface point (in eye coordinates)
+                           vec3 N, // Normal vector to the surface (EC)
+                           vec3 V  // Direction to viewer (EC)
+                         ) {
+	    // computed color (initially black)
+	    vec3 color = vec3(0);
+	
+	    vec3 L, R; // Light direction and reflected light direction.
+	    if ( light.position.w == 0.0 ) { // directional light
+            L = normalize( light.position.xyz );   
+    	} else { // point light
+            L = normalize( light.position.xyz/light.position.w - point );
+    	}
+    	if (dot(L,N) <= 0.0) { // light does not illuminate the surface
+            return vec3(0.0); 
+	    }
+
+	    // diffuse component
+	    color += dot(L,N) * light.color * material.diffuseColor;
+
+	    // specular component
+	    R = -reflect(L,N);
+	    if (dot(R,V) > 0.0) { // ray is reflected toward the the viewer
+            float factor = pow(dot(R,V),material.specularExponent);
+            color += factor * material.specularColor * light.color;
+    	}
+
+    	return color;
+    }
+
+    void main() {
+        vec3 V = normalize(-v_coords);
+        vec3 color = vec3(0.0);
+        if (u_light.enabled) {
+            color += lightingEquation(u_light, u_material, v_coords, v_normal, V);
+        }
+        // Compute the texture coordinates
+        float u = atan(f_coords_object.y, f_coords_object.x) / (2.0 * 3.1415927) + 0.5;
+        float v = asin(f_coords_object.z / u_sphereRadius) / 3.1415927 + 0.5;
+
+        vec4 texcolor = texture2D(u_texture, vec2(u, v));
+        
+        // Check the combine mode and adjust the color accordingly
+        if (u_combineMode == 0) { // replace
+            gl_FragColor = texcolor;
+        } else if (u_combineMode == 1) { // modulate
+            gl_FragColor = vec4(color * texcolor.rgb, texcolor.a);
+        } else { // 50-50 mix
+            gl_FragColor = mix(vec4(color, 1.0), texcolor, 0.5);
+        }
+    }
+    
+    </script>
+
+    <script src="../webgl/gl-matrix-min.js"></script>
+    <script src="../webgl/basic-object-models-IFS"></script>
+    <script src="../webgl/basic-object-models-tangents.js"></script>
+    <script src="../webgl/webgl-maputils.js"></script>
+    <script src="../webgl/webgl-utils.js"></script>
+    <script src="../webgl/basic-object-models-IFS.js"></script>
+    <script src="../webgl/trackball-rotator.js"></script>
+
+    <script>
+        let canvas;    // DOM object corresponding to the canvas
+        let gl;        // webgl graphics context for drawing on the canvas
+
+        let rotator;   // mouse rotator
+
+        let projection = mat4.create();    // projection matrix
+        let modelview = mat4.create();     // modelview matrix
+        let normalMatrix = mat3.create();  // for transforming normal vectors
+        let stack = [];
+
+        let texture;                       // texture object
+
+        // shader parameter locations
+        let a_coords_loc;       // vertex coordinates
+        let a_normal_loc;       // vertex normals
+        let u_transform_loc;
+        let u_material_loc;
+        let u_light_loc;
+        let u_texture_loc;          // texture unit
+        let u_texture_mode_loc;
+        let a_coords_buffer;    // buffer for a_coords
+        let a_normal_buffer;    // buffer for a_normal
+        let a_texcoords_buffer; // buffer for a_texcoords
+        let index_buffer;
+        let u_sphereRadius_loc; 
+        // set up the model data
+        function setModel(shape) {
+            gl.bindBuffer(gl.ARRAY_BUFFER, a_coords_buffer);
+            gl.bufferData(gl.ARRAY_BUFFER, shape.vertexPositions,
+                gl.STATIC_DRAW);
+            gl.vertexAttribPointer(a_coords_loc, 3, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(a_coords_loc);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, a_normal_buffer);
+            gl.bufferData(gl.ARRAY_BUFFER, shape.vertexNormals, gl.STATIC_DRAW);
+            gl.vertexAttribPointer(a_normal_loc, 3, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(a_normal_loc);
+
+            
+
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, index_buffer);
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, shape.indices,
+                gl.STATIC_DRAW);
+        }
+
+        // set the shader parameters for a material
+        function setMaterial(diffuse, specular, shininess) {
+            gl.uniform3fv(u_material_loc.diffuseColor, diffuse);
+            gl.uniform3fv(u_material_loc.specularColor, specular);
+            gl.uniform1f(u_material_loc.specularExponent, shininess);
+        }
+
+        // set the shader parameters for a 2D texture 
+        //  - active is the javascript active texture unit (gl.TEXTURE0, 
+        //     gl.TEXTURE1, etc)
+        //  - texunit is texture unit to use in the shader (0, 1, 2, etc)
+        //  - texobj is the texture object
+        function setTexture(active, texunit, texobj, mode) {
+            gl.activeTexture(active);   // working with 'active' texture unit
+            gl.bindTexture(gl.TEXTURE_2D, texobj);  // associate texture obj
+            // with active texture unit
+            gl.uniform1i(u_texture_mode_loc, mode);  // set texture mode
+            gl.uniform1i(u_texture_loc, texunit);  // set sampler var
+        }
+
+        // set the shader parameters for the light
+        function setLight(enabled, position, color) {
+            gl.uniform1i(u_light_loc.enabled, enabled);
+            gl.uniform4fv(u_light_loc.position, position);
+            gl.uniform3fv(u_light_loc.color, color);
+        }
+
+        // set the shader parameters for modelview and projection transforms
+        function setTransform(modelview, projection) {
+            // get matrix for transforming normals
+            mat3.normalFromMat4(normalMatrix, modelview);
+
+            // set up shader parameters
+            gl.uniformMatrix3fv(u_transform_loc.normalMatrix, false,
+                normalMatrix);
+            gl.uniformMatrix4fv(u_transform_loc.modelview, false, modelview);
+            gl.uniformMatrix4fv(u_transform_loc.projection, false, projection);
+        }
+
+        // draw on the canvas
+        function draw() {
+            // set color for clear  and clear canvas, depth buffer
+            gl.clearColor(.9, .9, .9, 1);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+            // set up viewing and projection
+            mat4.ortho(projection, -7, 7, -7, 7, 1, 19);
+            modelview = rotator.getViewMatrix();
+
+            // set up modeling part of modelview
+            mat4.rotateX(modelview, modelview, Math.PI / 8);
+            mat4.rotateY(modelview, modelview, Math.PI / 8);
+
+            setLight(1, [0, 0, 10, 1], [1, 1, 1]);
+
+            // draw the shapes
+            let shape = uvTorus(2, 1, 64, 32);
+            setModel(shape);
+            setMaterial([0.8, 0.0, 1.0], [0.2, 0, 0.25], 32);
+            setTexture(gl.TEXTURE0, 0, texture, 0);
+
+            stack.push(mat4.clone(modelview));
+            mat4.translate(modelview, modelview, [-4.5, 0, 0]);
+            setTransform(modelview, projection);
+            gl.drawElements(gl.TRIANGLES, shape.indices.length,
+                gl.UNSIGNED_SHORT, 0);
+            modelview = stack.pop();
+
+            setTexture(gl.TEXTURE0, 0, texture, 1);
+            stack.push(mat4.clone(modelview));
+            setTransform(modelview, projection);
+            gl.drawElements(gl.TRIANGLES, shape.indices.length,
+                gl.UNSIGNED_SHORT, 0);
+            modelview = stack.pop();
+
+            setTexture(gl.TEXTURE0, 0, texture, 2);
+            stack.push(mat4.clone(modelview));
+            mat4.translate(modelview, modelview, [4.5, 0, 0]);
+            setTransform(modelview, projection);
+            gl.drawElements(gl.TRIANGLES, shape.indices.length,
+                gl.UNSIGNED_SHORT, 0);
+            modelview = stack.pop();
+        }
+
+        // initialize the webgl graphics context
+        function initGL() {
+            // set up shader program
+            let vertexShaderSource = getTextContent("vshader");
+            let fragmentShaderSource = getTextContent("fshader");
+            let prog = createProgram(gl, vertexShaderSource,
+                fragmentShaderSource);
+            gl.useProgram(prog);
+
+            // set up locations and buffers for shader parameters
+            a_coords_loc = gl.getAttribLocation(prog, "a_coords");
+            a_normal_loc = gl.getAttribLocation(prog, "a_normal");
+
+            u_transform_loc = {
+                modelview: gl.getUniformLocation(prog, "u_transform.modelview"),
+                projection: gl.getUniformLocation(prog,
+                    "u_transform.projection"),
+                normalMatrix: gl.getUniformLocation(prog,
+                    "u_transform.normalMatrix")
+            };
+
+            u_material_loc = {
+                diffuseColor: gl.getUniformLocation(prog,
+                    "u_material.diffuseColor"),
+                specularColor: gl.getUniformLocation(prog,
+                    "u_material.specularColor"),
+                specularExponent: gl.getUniformLocation(prog,
+                    "u_material.specularExponent")
+            };
+
+            u_light_loc = {
+                enabled: gl.getUniformLocation(prog,
+                    "u_light.enabled"),
+                position: gl.getUniformLocation(prog,
+                    "u_light.position"),
+                color: gl.getUniformLocation(prog,
+                    "u_light.color")
+            };
+
+            u_texture_loc = gl.getUniformLocation(prog, "u_texture");
+            u_texture_mode_loc = gl.getUniformLocation(prog, "u_combineMode");
+
+            a_coords_buffer = gl.createBuffer();
+            a_normal_buffer = gl.createBuffer();
+            u_sphereRadius_loc = gl.getUniformLocation(prog, "u_sphereRadius");
+            index_buffer = gl.createBuffer();
+
+            // set defaults for the light (disabled by default)
+            setLight(0, [0, 0, 0, 1], [0, 0, 0]);
+
+            // set up texture object, including loading texture image
+            texture = gl.createTexture();
+            loadTexture("../textures/glassblk.jpg", texture, true);
+
+            // set up rotator
+            rotator = new TrackballRotator(canvas, draw, 10);
+
+            // enable depth test
+            gl.enable(gl.DEPTH_TEST);
+        }
+
+        // initialize program
+        // (called after page has been loaded)
+        function init() {
+            try {
+                canvas = document.getElementById("webglcanvas");
+                let options = {  // no need for alpha channel
+                    alpha: false,
+                    depth: true
+                };
+                gl = canvas.getContext("webgl", options) ||
+                    canvas.getContext("experimental-webgl", options);
+                if (!gl) {
+                    throw "Browser does not support WebGL";
+                }
+            }
+            catch (e) {
+                document.getElementById("canvas-holder").innerHTML =
+                    "<p>Sorry, could not get a WebGL graphics context.</p>";
+                return;
+            }
+            try {
+                initGL();  // initialize the WebGL graphics context
+            }
+            catch (e) {
+                document.getElementById("canvas-holder").innerHTML =
+                    "<p>Sorry, could not initialize the WebGL graphics context:" + e + "</p>";
+                return;
+            }
+            gl.uniform1f(u_sphereRadius_loc, 2.0); 
+            draw();    // draw the image
+        }
+    </script>
+</head>
+
+<body onload="init()">
+    <noscript>
+        <p><b>Sorry, but this page requires JavaScript.</b></p>
+    </noscript>
+
+    <div id="canvas-holder">
+        <canvas id="webglcanvas" width="500" height="500"></canvas>
+    </div>
+
+</body>
+
+</html>
